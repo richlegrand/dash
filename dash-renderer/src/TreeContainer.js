@@ -26,6 +26,7 @@ import {recordUiEdit} from './persistence';
 import ComponentErrorBoundary from './components/error/ComponentErrorBoundary.react';
 import checkPropTypes from './checkPropTypes';
 import {getWatchedKeys, stringifyId} from './actions/dependencies';
+import {pusherAdd} from './pusher'
 
 function validateComponent(componentDefinition) {
     if (type(componentDefinition) === 'Array') {
@@ -105,9 +106,10 @@ class TreeContainer extends Component {
         super(props);
 
         this.setProps = this.setProps.bind(this);
+        pusherAdd();
     }
 
-    setProps(newProps) {
+    setProps(newProps, notify=true) {
         const {
             _dashprivate_graphs,
             _dashprivate_dispatch,
@@ -142,7 +144,7 @@ class TreeContainer extends Component {
             );
 
             // Only dispatch changes to Dash if a watched prop changed
-            if (watchedKeys.length) {
+            if (notify && watchedKeys.length) {
                 _dashprivate_dispatch(
                     notifyObservers({
                         id,
