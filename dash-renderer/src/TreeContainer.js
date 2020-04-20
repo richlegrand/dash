@@ -106,7 +106,7 @@ class TreeContainer extends Component {
         super(props);
 
         this.setProps = this.setProps.bind(this);
-        pusherAdd();
+        pusherAdd(props._dashprivate_layout.props, this.setProps);
     }
 
     setProps(newProps, notify=true) {
