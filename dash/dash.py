@@ -17,6 +17,9 @@ from functools import wraps
 import flask
 from flask_compress import Compress
 from werkzeug.debug.tbtools import get_current_traceback
+from flask_sockets import Sockets
+from gevent import pywsgi
+from geventwebsocket.handler import WebSocketHandler
 
 import plotly
 import dash_renderer
@@ -360,6 +363,22 @@ class Dash(object):
 
         if app is not None:
             self.server = app
+
+        self.sockets = Sockets(self.server)
+
+        @self.sockets.route('/_dash-update-component-socket')
+        def update_component_socket(socket):
+            #import pdb
+            #pdb.set_trace()
+            print('*** ws')
+            socket.send('hello')
+            try:
+                while not socket.closed:
+                    data = socket.receive()
+                    print(data)
+            except: 
+                raise
+            print("*** ws exit")
 
         assets_blueprint_name = "{}{}".format(
             config.routes_pathname_prefix.replace("/", "_"), "dash_assets"
@@ -1506,4 +1525,6 @@ class Dash(object):
 
             self.logger.info("Debugger PIN: %s", debugger_pin)
 
-        self.server.run(host=host, port=port, debug=debug, **flask_run_options)
+        self.server.debug = bool(debug)
+        pywsgi.WSGIServer(('', port), self.server, handler_class=WebSocketHandler).serve_forever()
+
