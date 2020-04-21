@@ -12,6 +12,7 @@ const pusher = {
 			let url = 'ws://' + document.domain + ':' + location.port + '/_dash-update-component-socket';
 	  		pusher.socket = new WebSocket(url);
 	  		pusher.socket.onmessage = pusher.receive;
+	  		pusher.socket.onclose = pusher.close;
 		}
 		// add to table
 		pusher.setProps[props.id] = setProps;	
@@ -26,6 +27,11 @@ const pusher = {
         catch(error) {
         }
 	},	
+
+	close: function(event) {
+		console.log('close socket');
+		pusher.socket = null;
+	},
 
     update: function(data) {
         let ids = Object.keys(data);

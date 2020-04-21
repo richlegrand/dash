@@ -18,8 +18,10 @@ import flask
 from flask_compress import Compress
 from werkzeug.debug.tbtools import get_current_traceback
 from flask_sockets import Sockets
-from gevent import pywsgi
+from gevent import pywsgi, spawn
+from gevent.queue import Queue
 from geventwebsocket.handler import WebSocketHandler
+import time
 
 import plotly
 import dash_renderer
@@ -357,6 +359,65 @@ class Dash(object):
         if self.server is not None:
             self.init_app()
 
+    # find component within layout, given id
+    def find_component(self, obj, id):
+        if hasattr(obj, 'id'):
+            if obj.id==id:
+                return obj
+        if hasattr(obj, 'children'):
+            if isinstance(obj.children, list) or isinstance(obj.children, tuple):
+                for c in obj.children:
+                    res = self.find_component(c, id)
+                    if res!=None:
+                        return res
+            else:
+                return self.find_component(obj.children, id)
+        return None
+
+    # modify component in layout, given id and vals (modified values)
+    def mod_layout(self, id, vals):
+        f = self.find_component(self._layout, id)
+        if f!=None:
+            for attr, val in vals.items():
+                if hasattr(f, attr):
+                    exec('f.'+attr+'=val')
+
+    # serialize component to send over websocket
+    # todo: clean up this method
+    def serialize(self, obj):
+        if 'to_plotly_json' in dir(obj):
+            obj = self.serialize(obj.to_plotly_json())
+        elif isinstance(obj, dict):
+            for key in obj:
+                obj[key] = self.serialize(obj[key])
+        elif isinstance(obj, list) or isinstance(obj, tuple):
+            for i in range(len(obj)):
+                obj[i] = self.serialize(obj[i]);
+        return obj
+     
+    # modify component(s) and value(s) 
+    def push_mod(self, vals):
+        # update layout, if it's in the local layout
+        for id, val in vals.items():
+            # Make a separate copy for ourself (won't be affected by serialize.)
+            self.mod_layout(id, copy.deepcopy(val))
+        # serialize the values 
+        for id, val in vals.items():
+            self.serialize(val)
+        # then send, (put on queues) so clients are updated
+        for q in self.push_mod_queues:
+            q.put(vals)
+
+    def socket_receive(self, socket, queue):
+        print('*** ws receive')
+        while not socket.closed:
+            data = socket.receive()
+            if data is not None:
+                pass # do something
+            print('receive data', data)
+        queue.put(None) # signal sender
+        print("*** ws receive exit")
+
     def init_app(self, app=None):
         """Initialize the parts of Dash that require a flask app."""
         config = self.config
@@ -365,20 +426,23 @@ class Dash(object):
             self.server = app
 
         self.sockets = Sockets(self.server)
+        self.push_mod_queues = []
 
         @self.sockets.route('/_dash-update-component-socket')
         def update_component_socket(socket):
-            #import pdb
-            #pdb.set_trace()
-            print('*** ws')
+            print('*** ws send')
+            queue = Queue()
+            self.push_mod_queues.append(queue)
+            spawn(self.socket_receive, socket, queue)
             socket.send('hello')
-            try:
-                while not socket.closed:
-                    data = socket.receive()
-                    print(data)
-            except: 
-                raise
-            print("*** ws exit")
+            while not socket.closed:
+                mod = queue.get()
+                if mod is not None:
+                    pass # do something
+                print('send data', mod)
+            print("*** ws send exit")
+            self.push_mod_queues.remove(queue)
+
 
         assets_blueprint_name = "{}{}".format(
             config.routes_pathname_prefix.replace("/", "_"), "dash_assets"
