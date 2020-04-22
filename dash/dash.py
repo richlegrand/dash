@@ -406,10 +406,8 @@ class Dash(object):
             self.serialize(val)
         # then send, (put on queues) so clients are updated
         for q in self.push_mod_queues:
-            print(2)
-            q.put(vals)
-            #sleep(0.01)
-            print(3)
+            print('*** push', q, vals)
+            asyncio.run_coroutine_threadsafe(q.put(vals), self.loop)
 
     async def socket_receiver(self):
         print('*** ws receive')
@@ -428,8 +426,8 @@ class Dash(object):
         try:
             while True:
                 print('*** sending')
-                await quart.websocket.send('hello')
-                await asyncio.sleep(1)
+                mod = await queue.get()
+                await quart.websocket.send(json.dumps(mod))
         except asyncio.CancelledError:
             raise
         finally:
@@ -448,13 +446,15 @@ class Dash(object):
         @self.server.websocket('/_dash-update-component-socket')
         async def update_component_socket():
             print('**** spawning')
-            socket_sender = asyncio.create_task(quart.copy_current_websocket_context(self.socket_sender)(1234))
+            self.loop = asyncio.get_event_loop()
+            queue = asyncio.Queue()
+            self.push_mod_queues.append(queue)
+            socket_sender = asyncio.create_task(quart.copy_current_websocket_context(self.socket_sender)(queue))
             socket_receiver = asyncio.create_task(quart.copy_current_websocket_context(self.socket_receiver)())
             try:
                 await asyncio.gather(socket_sender, socket_receiver)
             finally:
-                socket_sender.cancel()
-                socket_receiver.cancel()
+                self.push_mod_queues.remove(queue)
                 print('*** exitting')
 
         assets_blueprint_name = "{}{}".format(
