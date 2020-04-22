@@ -411,15 +411,29 @@ class Dash(object):
             #sleep(0.01)
             print(3)
 
-    def socket_receive(self, socket, queue):
+    async def socket_receiver(self):
         print('*** ws receive')
-        while not socket.closed:
-            data = socket.receive()
-            if data is not None:
-                pass # do something
-            print('receive data', data)
-        queue.put(None) # signal sender
-        print("*** ws receive exit")
+        try:
+            while True:
+                print('*** receiving')
+                data = await quart.websocket.receive()
+                print('receive', data)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            print("*** ws receive exit")
+
+    async def socket_sender(self, queue):
+        print('*** ws send', queue)
+        try:
+            while True:
+                print('*** sending')
+                await quart.websocket.send('hello')
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            print("*** ws send exit")
 
     def init_app(self, app=None):
         """Initialize the parts of Dash that require a flask app."""
@@ -433,21 +447,15 @@ class Dash(object):
         # websocket connection handler -- this routine sends component modifications
         @self.server.websocket('/_dash-update-component-socket')
         async def update_component_socket():
-            print('*** ws send')
-            #queue = Queue()
-            #self.push_mod_queues.append(queue)
-            await quart.websocket.send("hello")
+            print('**** spawning')
+            socket_sender = asyncio.create_task(quart.copy_current_websocket_context(self.socket_sender)(1234))
+            socket_receiver = asyncio.create_task(quart.copy_current_websocket_context(self.socket_receiver)())
             try:
-                while True:
-                    #mod = queue.get()
-                    print('*** receiving')
-                    data = await quart.websocket.receive()
-                    print('receive', data)
-                    # quart.websocket.send(json.dumps(mod))
-            except asyncio.CancelledError:
-                pass
-            print("*** ws send exit")
-            #self.push_mod_queues.remove(queue)
+                await asyncio.gather(socket_sender, socket_receiver)
+            finally:
+                socket_sender.cancel()
+                socket_receiver.cancel()
+                print('*** exitting')
 
         assets_blueprint_name = "{}{}".format(
             config.routes_pathname_prefix.replace("/", "_"), "dash_assets"
