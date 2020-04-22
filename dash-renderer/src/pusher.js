@@ -19,13 +19,9 @@ const pusher = {
 	},
 
 	receive: function(event) {
+		console.log('receive')
 	    console.log(event.data);
-	    return;
-        try {
-            pusher.update(JSON.parse(event.data));
-        }
-        catch(error) {
-        }
+        //pusher.update(JSON.parse(event.data));
 	},	
 
 	close: function(event) {
@@ -37,7 +33,7 @@ const pusher = {
         let ids = Object.keys(data);
         for (const id of ids) {
             if (id in pusher.setProps)
-            	pusher.setProps.id(data.id, false);
+            	pusher.setProps.id(data.id, true);
             else
             	console.log('cannot find ' + id);
         }

@@ -11,17 +11,17 @@ import pkgutil
 import threading
 import re
 import logging
+import copy
 
 from functools import wraps
 
 import flask
-from flask_compress import Compress
+import quart
+from quart_compress import Compress
+from asgiref.sync import sync_to_async
+import asyncio
+import inspect
 from werkzeug.debug.tbtools import get_current_traceback
-from flask_sockets import Sockets
-from gevent import pywsgi, spawn
-from gevent.queue import Queue
-from geventwebsocket.handler import WebSocketHandler
-import time
 
 import plotly
 import dash_renderer
@@ -250,15 +250,15 @@ class Dash(object):
 
         # We have 3 cases: server is either True (we create the server), False
         # (defer server creation) or a Flask app instance (we use their server)
-        if isinstance(server, flask.Flask):
+        if isinstance(server, quart.Quart):
             self.server = server
             if name is None:
                 name = getattr(server, "name", "__main__")
         elif isinstance(server, bool):
             name = name if name else "__main__"
-            self.server = flask.Flask(name) if server else None
+            self.server = quart.Quart(name) if server else None
         else:
-            raise ValueError("server must be a Flask app or a boolean")
+            raise ValueError("server must be a Quart app or a boolean")
 
         base_prefix, routes_prefix, requests_prefix = pathname_configs(
             url_base_pathname, routes_pathname_prefix, requests_pathname_prefix
@@ -406,7 +406,10 @@ class Dash(object):
             self.serialize(val)
         # then send, (put on queues) so clients are updated
         for q in self.push_mod_queues:
+            print(2)
             q.put(vals)
+            #sleep(0.01)
+            print(3)
 
     def socket_receive(self, socket, queue):
         print('*** ws receive')
@@ -425,31 +428,33 @@ class Dash(object):
         if app is not None:
             self.server = app
 
-        self.sockets = Sockets(self.server)
         self.push_mod_queues = []
 
-        @self.sockets.route('/_dash-update-component-socket')
-        def update_component_socket(socket):
+        # websocket connection handler -- this routine sends component modifications
+        @self.server.websocket('/_dash-update-component-socket')
+        async def update_component_socket():
             print('*** ws send')
-            queue = Queue()
-            self.push_mod_queues.append(queue)
-            spawn(self.socket_receive, socket, queue)
-            socket.send('hello')
-            while not socket.closed:
-                mod = queue.get()
-                if mod is not None:
-                    pass # do something
-                print('send data', mod)
+            #queue = Queue()
+            #self.push_mod_queues.append(queue)
+            await quart.websocket.send("hello")
+            try:
+                while True:
+                    #mod = queue.get()
+                    print('*** receiving')
+                    data = await quart.websocket.receive()
+                    print('receive', data)
+                    # quart.websocket.send(json.dumps(mod))
+            except asyncio.CancelledError:
+                pass
             print("*** ws send exit")
-            self.push_mod_queues.remove(queue)
-
+            #self.push_mod_queues.remove(queue)
 
         assets_blueprint_name = "{}{}".format(
             config.routes_pathname_prefix.replace("/", "_"), "dash_assets"
         )
 
         self.server.register_blueprint(
-            flask.Blueprint(
+            quart.Blueprint(
                 assets_blueprint_name,
                 config.name,
                 static_folder=self.config.assets_folder,
@@ -526,11 +531,11 @@ class Dash(object):
         _validate.validate_index("index string", checks, value)
         self._index_string = value
 
-    def serve_layout(self):
+    async def serve_layout(self):
         layout = self._layout_value()
 
         # TODO - Set browser cache limit - pass hash into frontend
-        return flask.Response(
+        return quart.Response(
             json.dumps(layout, cls=plotly.utils.PlotlyJSONEncoder),
             mimetype="application/json",
         )
@@ -553,7 +558,7 @@ class Dash(object):
             }
         return config
 
-    def serve_reload_hash(self):
+    async def serve_reload_hash(self):
         _reload = self._hot_reload
         with _reload.lock:
             hard = _reload.hard
@@ -562,7 +567,7 @@ class Dash(object):
             _reload.hard = False
             _reload.changed_assets = []
 
-        return flask.jsonify(
+        return quart.jsonify(
             {
                 "reloadHash": _hash,
                 "hard": hard,
@@ -713,7 +718,7 @@ class Dash(object):
         return "\n      ".join(tags)
 
     # Serve the JS bundles for each package
-    def serve_component_suites(self, package_name, fingerprinted_path):
+    async def serve_component_suites(self, package_name, fingerprinted_path):
         path_in_pkg, has_fingerprint = check_fingerprint(fingerprinted_path)
 
         _validate.validate_js_path(self.registered_paths, package_name, path_in_pkg)
@@ -735,7 +740,7 @@ class Dash(object):
             package.__path__,
         )
 
-        response = flask.Response(
+        response = quart.Response(
             pkgutil.get_data(package_name, path_in_pkg), mimetype=mimetype
         )
 
@@ -746,17 +751,17 @@ class Dash(object):
         else:
             # Non-fingerprinted resources are given an ETag that
             # will be used / check on future requests
-            response.add_etag()
+            await response.add_etag()
             tag = response.get_etag()[0]
 
-            request_etag = flask.request.headers.get("If-None-Match")
+            request_etag = quart.request.headers.get("If-None-Match")
 
             if '"{}"'.format(tag) == request_etag:
-                response = flask.Response(None, status=304)
+                response = quart.Response(None, status=304)
 
         return response
 
-    def index(self, *args, **kwargs):  # pylint: disable=unused-argument
+    async def index(self, *args, **kwargs):  # pylint: disable=unused-argument
         scripts = self._generate_scripts_html()
         css = self._generate_css_dist_html()
         config = self._generate_config_html()
@@ -860,8 +865,8 @@ class Dash(object):
             app_entry=app_entry,
         )
 
-    def dependencies(self):
-        return flask.jsonify(self._callback_list)
+    async def dependencies(self):
+        return quart.jsonify(self._callback_list)
 
     def _insert_callback(self, output, inputs, state):
         _validate.validate_callback(output, inputs, state)
@@ -978,11 +983,14 @@ class Dash(object):
 
         def wrap_func(func):
             @wraps(func)
-            def add_context(*args, **kwargs):
+            async def add_context(*args, **kwargs):
                 output_spec = kwargs.pop("outputs_list")
 
-                # don't touch the comment on the next line - used by debugger
-                output_value = func(*args, **kwargs)  # %% callback invoked %%
+                if inspect.iscoroutinefunction(func):
+                    output_value = await func(*args, **kwargs)  # %% callback invoked
+                else:
+                    loop = asyncio.get_event_loop()
+                    output_value = await loop.run_in_executor(None, func, *args, **kwargs)  # %% callback invoked 
 
                 if isinstance(output_value, _NoUpdate):
                     raise PreventUpdate
@@ -1027,27 +1035,27 @@ class Dash(object):
 
         return wrap_func
 
-    def dispatch(self):
-        body = flask.request.get_json()
-        flask.g.inputs_list = inputs = body.get("inputs", [])
-        flask.g.states_list = state = body.get("state", [])
+    async def dispatch(self):
+        body = await quart.request.get_json()
+        quart.g.inputs_list = inputs = body.get("inputs", [])
+        quart.g.states_list = state = body.get("state", [])
         output = body["output"]
         outputs_list = body.get("outputs") or split_callback_id(output)
-        flask.g.outputs_list = outputs_list
+        quart.g.outputs_list = outputs_list
 
-        flask.g.input_values = input_values = inputs_to_dict(inputs)
-        flask.g.state_values = inputs_to_dict(state)
+        quart.g.input_values = input_values = inputs_to_dict(inputs)
+        quart.g.state_values = inputs_to_dict(state)
         changed_props = body.get("changedPropIds", [])
-        flask.g.triggered_inputs = [
+        quart.g.triggered_inputs = [
             {"prop_id": x, "value": input_values.get(x)} for x in changed_props
         ]
 
-        response = flask.g.dash_response = flask.Response(mimetype="application/json")
+        response = quart.g.dash_response = quart.Response(None, mimetype="application/json")
 
         args = inputs_to_vals(inputs) + inputs_to_vals(state)
 
         func = self.callback_map[output]["callback"]
-        response.set_data(func(*args, outputs_list=outputs_list))
+        response.set_data(await func(*args, outputs_list=outputs_list))
         return response
 
     def _setup_server(self):
@@ -1117,8 +1125,8 @@ class Dash(object):
         return err.args[0], 404
 
     @staticmethod
-    def _serve_default_favicon():
-        return flask.Response(
+    async def _serve_default_favicon():
+        return quart.Response(
             pkgutil.get_data("dash", "favicon.ico"), content_type="image/x-icon"
         )
 
@@ -1589,6 +1597,5 @@ class Dash(object):
 
             self.logger.info("Debugger PIN: %s", debugger_pin)
 
-        self.server.debug = bool(debug)
-        pywsgi.WSGIServer(('', port), self.server, handler_class=WebSocketHandler).serve_forever()
+        self.server.run(host=host, port=port, debug=debug, **flask_run_options)
 
