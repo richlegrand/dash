@@ -41,6 +41,7 @@ import {
 import {computePaths, getPath} from './paths';
 import {STATUS} from '../constants/constants';
 import {applyPersistence, prunePersistence} from '../persistence';
+import {pusherCallback} from '../pusher'
 
 import isAppReady from './isAppReady';
 
@@ -388,7 +389,11 @@ async function fireReadyCallbacks(dispatch, getState, callbacks) {
             hasClientSide = true;
             return null;
         }
-
+        
+        if (cb.callback.service!==0) {
+            pusherCallback(payload);
+            return null;
+        }
         return handleServerside(config, payload, hooks)
             .then(handleData)
             .catch(handleError)

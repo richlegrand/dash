@@ -3,7 +3,7 @@ from __future__ import print_function
 import itertools
 import os
 import random
-import syst
+import sys
 import collections
 import importlib
 import json
@@ -15,7 +15,6 @@ import copy
 
 from functools import wraps
 
-import flask
 import quart
 from quart_compress import Compress
 from asgiref.sync import sync_to_async
@@ -94,7 +93,7 @@ class _NoUpdate(object):
 # Singleton signal to not update an output, alternative to PreventUpdate
 no_update = _NoUpdate()
 
-# Thread-local storage for calling contexts
+# Thread-local storage for callback contexts
 g = threading.local()
 
 _inline_clientside_template = """
@@ -265,11 +264,15 @@ class Dash(object):
         base_prefix, routes_prefix, requests_prefix = pathname_configs(
             url_base_pathname, routes_pathname_prefix, requests_pathname_prefix
         )
-
+        mod = sys.modules.get(name)
+        if mod is not None and hasattr(mod, "__file__"):
+            root_path = os.path.dirname(os.path.abspath(mod.__file__))
+        else: 
+            root_path = os.getcwd() 
         self.config = AttributeDict(
             name=name,
             assets_folder=os.path.join(
-                flask.helpers.get_root_path(name), assets_folder
+                root_path, assets_folder
             ),
             assets_url_path=assets_url_path,
             assets_ignore=assets_ignore,

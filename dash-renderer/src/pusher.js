@@ -24,6 +24,11 @@ const pusher = {
         pusher.update(JSON.parse(event.data));
 	},	
 
+    callback: function(payload) {
+        console.log(payload)
+        //pusher.socket.send(JSON.stringify(payload));
+    },
+
 	close: function(event) {
 		console.log('close socket');
 		pusher.socket = null;
@@ -42,4 +47,8 @@ const pusher = {
 
 export function pusherAdd(props, setProps) {
 	pusher.add(props, setProps);
+}
+
+export function pusherCallback(payload) {
+    pusher.callback(payload);    
 }
