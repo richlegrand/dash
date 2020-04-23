@@ -3,7 +3,7 @@ from __future__ import print_function
 import itertools
 import os
 import random
-import sys
+import syst
 import collections
 import importlib
 import json
@@ -94,6 +94,8 @@ class _NoUpdate(object):
 # Singleton signal to not update an output, alternative to PreventUpdate
 no_update = _NoUpdate()
 
+# Thread-local storage for calling contexts
+g = threading.local()
 
 _inline_clientside_template = """
 var clientside = window.dash_clientside = window.dash_clientside || {{}};
@@ -404,9 +406,8 @@ class Dash(object):
         # serialize the values 
         for id, val in vals.items():
             self.serialize(val)
-        # then send, (put on queues) so clients are updated
+        # then send, (put on queues) so all clients are updated
         for q in self.push_mod_queues:
-            print('*** push', q, vals)
             asyncio.run_coroutine_threadsafe(q.put(vals), self.loop)
 
     async def socket_receiver(self):
@@ -441,12 +442,14 @@ class Dash(object):
             self.server = app
 
         self.push_mod_queues = []
+        self.loop = None
 
         # websocket connection handler -- this routine sends component modifications
         @self.server.websocket('/_dash-update-component-socket')
         async def update_component_socket():
             print('**** spawning')
-            self.loop = asyncio.get_event_loop()
+            if self.loop is None:
+                self.loop = asyncio.get_event_loop()
             queue = asyncio.Queue()
             self.push_mod_queues.append(queue)
             socket_sender = asyncio.create_task(quart.copy_current_websocket_context(self.socket_sender)(queue))
@@ -995,14 +998,29 @@ class Dash(object):
 
         def wrap_func(func):
             @wraps(func)
-            async def add_context(*args, **kwargs):
-                output_spec = kwargs.pop("outputs_list")
+            async def add_context(body, response):
+                g.inputs_list = inputs = body.get("inputs", [])
+                g.states_list = state = body.get("state", [])
+                output = body["output"]
+                outputs_list = body.get("outputs") or split_callback_id(output)
+                g.outputs_list = outputs_list
 
+                g.input_values = input_values = inputs_to_dict(inputs)
+                g.state_values = inputs_to_dict(state)
+                changed_props = body.get("changedPropIds", [])
+                g.triggered_inputs = [
+                    {"prop_id": x, "value": input_values.get(x)} for x in changed_props
+                ]
+                g.dash_response = response
+
+                args = inputs_to_vals(inputs) + inputs_to_vals(state)
+
+                g.active = True # for coroutine, thread context doesn't go away
                 if inspect.iscoroutinefunction(func):
-                    output_value = await func(*args, **kwargs)  # %% callback invoked
+                    output_value = await func(*args)  # %% callback invoked
                 else:
-                    loop = asyncio.get_event_loop()
-                    output_value = await loop.run_in_executor(None, func, *args, **kwargs)  # %% callback invoked 
+                    output_value = func(*args)  # %% callback invoked
+                g.active = False 
 
                 if isinstance(output_value, _NoUpdate):
                     raise PreventUpdate
@@ -1010,13 +1028,13 @@ class Dash(object):
                 # wrap single outputs so we can treat them all the same
                 # for validation and response creation
                 if not multi:
-                    output_value, output_spec = [output_value], [output_spec]
+                    output_value, outputs_list = [output_value], [outputs_list]
 
-                _validate.validate_multi_return(output_spec, output_value, callback_id)
+                _validate.validate_multi_return(outputs_list, output_value, callback_id)
 
                 component_ids = collections.defaultdict(dict)
                 has_update = False
-                for val, spec in zip(output_value, output_spec):
+                for val, spec in zip(output_value, outputs_list):
                     if isinstance(val, _NoUpdate):
                         continue
                     for vali, speci in (
@@ -1041,33 +1059,24 @@ class Dash(object):
 
                 return jsonResponse
 
+            if inspect.iscoroutinefunction(func):
+                add_context = asyncio.coroutine(add_context) # make into a coroutine
             self.callback_map[callback_id]["callback"] = add_context
-
+        
             return add_context
 
         return wrap_func
 
     async def dispatch(self):
         body = await quart.request.get_json()
-        quart.g.inputs_list = inputs = body.get("inputs", [])
-        quart.g.states_list = state = body.get("state", [])
-        output = body["output"]
-        outputs_list = body.get("outputs") or split_callback_id(output)
-        quart.g.outputs_list = outputs_list
-
-        quart.g.input_values = input_values = inputs_to_dict(inputs)
-        quart.g.state_values = inputs_to_dict(state)
-        changed_props = body.get("changedPropIds", [])
-        quart.g.triggered_inputs = [
-            {"prop_id": x, "value": input_values.get(x)} for x in changed_props
-        ]
-
-        response = quart.g.dash_response = quart.Response(None, mimetype="application/json")
-
-        args = inputs_to_vals(inputs) + inputs_to_vals(state)
-
-        func = self.callback_map[output]["callback"]
-        response.set_data(await func(*args, outputs_list=outputs_list))
+        response = quart.Response(None, mimetype="application/json")
+        func = self.callback_map[body["output"]]["callback"]
+        if inspect.iscoroutinefunction(func):
+            output = await func(body, response)  # %% callback invoked
+        else:
+            loop = asyncio.get_event_loop()
+            output = await loop.run_in_executor(None, func, body, response)  # %% callback invoked 
+        response.set_data(output)
         return response
 
     def _setup_server(self):
