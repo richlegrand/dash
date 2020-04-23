@@ -33,7 +33,7 @@ const pusher = {
         let ids = Object.keys(data);
         for (const id of ids) {
             if (id in pusher.setProps)
-            	pusher.setProps[id](data[id], true);
+            	pusher.setProps[id](data[id], false);
             else
             	console.log('cannot find ' + id);
         }

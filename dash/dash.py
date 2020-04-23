@@ -876,13 +876,14 @@ class Dash(object):
     async def dependencies(self):
         return quart.jsonify(self._callback_list)
 
-    def _insert_callback(self, output, inputs, state):
+    def _insert_callback(self, output, inputs, state, service):
         _validate.validate_callback(output, inputs, state)
         callback_id = create_callback_id(output)
         callback_spec = {
             "output": callback_id,
             "inputs": [c.to_dict() for c in inputs],
             "state": [c.to_dict() for c in state],
+            "service": service,
             "clientside_function": None,
         }
         self.callback_map[callback_id] = {
@@ -985,8 +986,11 @@ class Dash(object):
             "function_name": function_name,
         }
 
-    def callback(self, output, inputs, state=()):
-        callback_id = self._insert_callback(output, inputs, state)
+    def callback_s1(self, output, inputs, state=()):
+        return self.callback(output, inputs, state, 1)
+
+    def callback(self, output, inputs, state=(), service=0):
+        callback_id = self._insert_callback(output, inputs, state, service)
         multi = isinstance(output, (list, tuple))
 
         def wrap_func(func):

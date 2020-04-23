@@ -1213,7 +1213,7 @@ export function getCallbacksInLayout(graphs, paths, layoutChunk, opts) {
                     callbacks[foundIndex].changedPropIds,
                     callback.changedPropIds
                 );
-            } else {
+            } else if (callback.callback.service===0) {
                 foundCbIds[callback.resolvedId] = callbacks.length;
                 callbacks.push(callback);
             }
