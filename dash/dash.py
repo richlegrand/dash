@@ -102,6 +102,12 @@ var ns = clientside["{namespace}"] = clientside["{namespace}"] || {{}};
 ns["{function_name}"] = {clientside_function};
 """
 
+def runcoro(coro):
+    try:
+        coro.send(None)
+    except StopIteration as e:
+        return e.value
+
 
 # pylint: disable=too-many-instance-attributes
 # pylint: disable=too-many-arguments, too-many-locals
@@ -1062,9 +1068,7 @@ class Dash(object):
 
                 return jsonResponse
 
-            if inspect.iscoroutinefunction(func):
-                add_context = asyncio.coroutine(add_context) # make into a coroutine
-            self.callback_map[callback_id]["callback"] = add_context
+            self.callback_map[callback_id]["callback"] = (add_context, inspect.iscoroutinefunction(func))
         
             return add_context
 
@@ -1073,12 +1077,13 @@ class Dash(object):
     async def dispatch(self):
         body = await quart.request.get_json()
         response = quart.Response(None, mimetype="application/json")
-        func = self.callback_map[body["output"]]["callback"]
-        if inspect.iscoroutinefunction(func):
+        func, coro = self.callback_map[body["output"]]["callback"]
+
+        if coro:
             output = await func(body, response)  # %% callback invoked
         else:
             loop = asyncio.get_event_loop()
-            output = await loop.run_in_executor(None, func, body, response)  # %% callback invoked 
+            output = await loop.run_in_executor(None, runcoro, func(body, response))  # %% callback invoked 
         response.set_data(output)
         return response
 
