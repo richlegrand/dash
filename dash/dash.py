@@ -21,6 +21,7 @@ from asgiref.sync import sync_to_async
 import asyncio
 import inspect
 from werkzeug.debug.tbtools import get_current_traceback
+from contextvars import ContextVar
 
 import plotly
 import dash_renderer
@@ -84,6 +85,9 @@ _re_index_config_id = 'id="_dash-config"', "#_dash-config"
 _re_index_scripts_id = 'src="[^"]*dash[-_]renderer[^"]*"', "dash-renderer"
 _re_renderer_scripts_id = 'id="_dash-renderer', "new DashRenderer"
 
+class _Context(object):
+    # pylint: disable=too-few-public-methods
+    pass
 
 class _NoUpdate(object):
     # pylint: disable=too-few-public-methods
@@ -93,8 +97,9 @@ class _NoUpdate(object):
 # Singleton signal to not update an output, alternative to PreventUpdate
 no_update = _NoUpdate()
 
-# Thread-local storage for callback contexts
-g = threading.local()
+
+g_cc = ContextVar('calling_context')
+
 
 _inline_clientside_template = """
 var clientside = window.dash_clientside = window.dash_clientside || {{}};
@@ -1007,7 +1012,9 @@ class Dash(object):
 
         def wrap_func(func):
             @wraps(func)
-            async def add_context(body, response):
+            async def add_context(body, response, lock=None):
+                g = _Context()  
+                g_cc.set(g)          
                 g.inputs_list = inputs = body.get("inputs", [])
                 g.states_list = state = body.get("state", [])
                 output = body["output"]
@@ -1024,12 +1031,16 @@ class Dash(object):
 
                 args = inputs_to_vals(inputs) + inputs_to_vals(state)
 
-                g.active = True # for coroutine, thread context doesn't go away
-                if inspect.iscoroutinefunction(func):
-                    output_value = await func(*args)  # %% callback invoked
-                else:
-                    output_value = func(*args)  # %% callback invoked
-                g.active = False 
+                if lock is not None:
+                    lock.acquire()
+                try:
+                    if inspect.iscoroutinefunction(func):
+                        output_value = await func(*args)  # %% callback invoked
+                    else:
+                        output_value = func(*args)  # %% callback invoked
+                finally:
+                    if lock is not None:
+                        lock.release()
 
                 if isinstance(output_value, _NoUpdate):
                     raise PreventUpdate
@@ -1068,7 +1079,12 @@ class Dash(object):
 
                 return jsonResponse
 
-            self.callback_map[callback_id]["callback"] = (add_context, inspect.iscoroutinefunction(func))
+            coro = inspect.iscoroutinefunction(func);
+            if coro:
+                lock = asyncio.Lock() if service==1 else None
+            else:
+                lock = threading.Lock() if service==1 else None 
+            self.callback_map[callback_id]["callback"] = (add_context, coro, lock)
         
             return add_context
 
@@ -1077,16 +1093,16 @@ class Dash(object):
     async def dispatch(self):
         body = await quart.request.get_json()
         response = quart.Response(None, mimetype="application/json")
-        func, coro = self.callback_map[body["output"]]["callback"]
+        func, coro, lock = self.callback_map[body["output"]]["callback"]
 
         if coro:
-            output = await func(body, response)  # %% callback invoked
+            output = await func(body, response, lock)  # %% callback invoked
         else:
             loop = asyncio.get_event_loop()
             # The callback isn't a coroutine, so we need to run in an executor.
             # Note, there is no easy way to have a wrapper return a coroutine or routine conditionally...
             # So func is always a coroutine and runcoro() bridges this gap.  
-            output = await loop.run_in_executor(None, runcoro, func(body, response))  # %% callback invoked 
+            output = await loop.run_in_executor(None, runcoro, func(body, response, lock))  # %% callback invoked 
         response.set_data(output)
         return response
 

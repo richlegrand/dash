@@ -1,5 +1,5 @@
 import functools
-import dash
+from dash import g_cc 
 
 from . import exceptions
 
@@ -7,7 +7,9 @@ from . import exceptions
 def has_context(func):
     @functools.wraps(func)
     def assert_context(*args, **kwargs):
-        if not hasattr(dash.g, "active"):
+        try:
+            g_cc.get()
+        except:
             raise exceptions.MissingCallbackContextException(
                 "dash.callback_context.{} is only available from a callback!".format(
                     getattr(func, "__name__")
@@ -36,12 +38,12 @@ class CallbackContext:
     @property
     @has_context
     def inputs(self):
-        return getattr(dash.g, "input_values", {})
+        return getattr(g_cc.get(), "input_values", {})
 
     @property
     @has_context
     def states(self):
-        return getattr(dash.g, "state_values", {})
+        return getattr(g_cc.get(), "state_values", {})
 
     @property
     @has_context
@@ -50,26 +52,27 @@ class CallbackContext:
         # value - to avoid breaking existing apps, add a dummy item but
         # make the list still look falsy. So `if ctx.triggered` will make it
         # look empty, but you can still do `triggered[0]["prop_id"].split(".")`
-        return getattr(dash.g, "triggered_inputs", []) or falsy_triggered
+        return getattr(g_cc.get(), "triggered_inputs", []) or falsy_triggered
 
     @property
     @has_context
     def outputs_list(self):
-        return getattr(dash.g, "outputs_list", [])
+        return getattr(g_cc.get(), "outputs_list", [])
 
     @property
     @has_context
     def inputs_list(self):
-        return getattr(dash.g, "inputs_list", [])
+        return getattr(g_cc.get(), "inputs_list", [])
 
     @property
     @has_context
     def states_list(self):
-        return getattr(dash.g, "states_list", [])
+        g = g_cc.get()
+        return getattr(g_cc.get(), "states_list", [])
 
     @property
     @has_context
     def response(self):
-        return getattr(dash.g, "dash_response")
+        return getattr(g_cc.get(), "dash_response")
 
 callback_context = CallbackContext()

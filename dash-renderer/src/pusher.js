@@ -5,6 +5,8 @@ const pusher = {
 
 	socket: null, 
 
+    pending: {}, 
+
 	add: function(props, setProps) {
 
 		if (pusher.socket===null) {
@@ -24,10 +26,15 @@ const pusher = {
         pusher.update(JSON.parse(event.data));
 	},	
 
+    baz: function baz() {
+        pusher.pending['dummy6.children']({multi: true, response: {dummy6: {children: null}}});
+    },
+
     callback: function(payload) {
         console.log(payload)
         //pusher.socket.send(JSON.stringify(payload));
-        const p = new Promise(resolve => resolve({multi: true, response: {dummy6: {children: null}}}));
+        const p = new Promise(resolve => pusher.pending[payload.output] = resolve);
+        setTimeout(pusher.baz, 2000);
         return p;
     },
 
