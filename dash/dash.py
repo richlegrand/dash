@@ -1083,6 +1083,9 @@ class Dash(object):
             output = await func(body, response)  # %% callback invoked
         else:
             loop = asyncio.get_event_loop()
+            # The callback isn't a coroutine, so we need to run in an executor.
+            # Note, there is no easy way to have a wrapper return a coroutine or routine conditionally...
+            # So func is always a coroutine and runcoro() bridges this gap.  
             output = await loop.run_in_executor(None, runcoro, func(body, response))  # %% callback invoked 
         response.set_data(output)
         return response

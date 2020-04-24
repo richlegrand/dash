@@ -389,12 +389,8 @@ async function fireReadyCallbacks(dispatch, getState, callbacks) {
             hasClientSide = true;
             return null;
         }
-        
-        if (cb.callback.service!==0) {
-            pusherCallback(payload);
-            return null;
-        }
-        return handleServerside(config, payload, hooks)
+
+        return handleServerside(config, payload, hooks, cb.callback.service)
             .then(handleData)
             .catch(handleError)
             .then(fireNext);
@@ -420,42 +416,57 @@ function fillVals(paths, layout, cb, specs, depType) {
     );
 }
 
-function handleServerside(config, payload, hooks) {
+function serverInteract(config, payload, service) {
+    if (service===0) {
+        return fetch(
+            `${urlBase(config)}_dash-update-component`,
+            mergeDeepRight(config.fetch, {
+                method: 'POST',
+                headers: getCSRFHeader(),
+                body: JSON.stringify(payload),
+            })
+        ).then(res => {
+            const {status} = res;
+            if (status === STATUS.OK) {
+                return res.json(); 
+            }       
+            if (status === STATUS.PREVENT_UPDATE) {
+                return {};
+            }
+            throw res;
+        })    
+    }
+    else {
+        return pusherCallback(payload);
+    }
+}
+
+function handleServerside(config, payload, hooks, service) {
     if (hooks.request_pre !== null) {
         hooks.request_pre(payload);
     }
 
-    return fetch(
-        `${urlBase(config)}_dash-update-component`,
-        mergeDeepRight(config.fetch, {
-            method: 'POST',
-            headers: getCSRFHeader(),
-            body: JSON.stringify(payload),
-        })
-    ).then(res => {
-        const {status} = res;
-        if (status === STATUS.OK) {
-            return res.json().then(data => {
-                const {multi, response} = data;
-                if (hooks.request_post !== null) {
-                    hooks.request_post(payload, response);
-                }
+    const p = serverInteract(config, payload, service);
 
-                if (multi) {
-                    return response;
-                }
+    if (!(p instanceof Promise))
+        return p;
 
-                const {output} = payload;
-                const id = output.substr(0, output.lastIndexOf('.'));
-                return {[id]: response.props};
-            });
+    return p.then(data => {
+        const {multi, response} = data;
+        if (hooks.request_post !== null) {
+            hooks.request_post(payload, response);
         }
-        if (status === STATUS.PREVENT_UPDATE) {
-            return {};
+
+        if (multi) {
+            return response;
         }
-        throw res;
+
+        const {output} = payload;
+        const id = output.substr(0, output.lastIndexOf('.'));
+        return {[id]: response.props};
     });
 }
+
 
 const getVals = input =>
     Array.isArray(input) ? pluck('value', input) : input.value;

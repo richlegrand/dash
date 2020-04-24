@@ -27,6 +27,8 @@ const pusher = {
     callback: function(payload) {
         console.log(payload)
         //pusher.socket.send(JSON.stringify(payload));
+        const p = new Promise(resolve => resolve({multi: true, response: {dummy6: {children: null}}}));
+        return p;
     },
 
 	close: function(event) {
@@ -50,5 +52,5 @@ export function pusherAdd(props, setProps) {
 }
 
 export function pusherCallback(payload) {
-    pusher.callback(payload);    
+    return pusher.callback(payload);   
 }
