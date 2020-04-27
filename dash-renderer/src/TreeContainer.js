@@ -26,7 +26,7 @@ import {recordUiEdit} from './persistence';
 import ComponentErrorBoundary from './components/error/ComponentErrorBoundary.react';
 import checkPropTypes from './checkPropTypes';
 import {getWatchedKeys, stringifyId} from './actions/dependencies';
-import {pusherAdd} from './pusher'
+import {pusheeAdd} from './pushee'
 
 function validateComponent(componentDefinition) {
     if (type(componentDefinition) === 'Array') {
@@ -106,7 +106,7 @@ class TreeContainer extends Component {
         super(props);
 
         this.setProps = this.setProps.bind(this);
-        pusherAdd(props._dashprivate_layout.props, this.setProps);
+        pusheeAdd(props._dashprivate_layout.props, this.setProps);
     }
 
     setProps(newProps, notify=true) {

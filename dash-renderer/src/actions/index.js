@@ -41,7 +41,7 @@ import {
 import {computePaths, getPath} from './paths';
 import {STATUS} from '../constants/constants';
 import {applyPersistence, prunePersistence} from '../persistence';
-import {pusherCallback} from '../pusher'
+import {pusheeCallback} from '../pushee'
 
 import isAppReady from './isAppReady';
 
@@ -437,7 +437,7 @@ function serverInteract(config, payload, service) {
         })    
     }
     else {
-        return pusherCallback(payload);
+        return pusheeCallback(payload);
     }
 }
 

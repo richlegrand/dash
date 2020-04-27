@@ -47,6 +47,7 @@ from ._utils import (
     stringify_id,
     strip_relative_path,
 )
+from .pusher import Pusher
 from . import _validate
 from . import _watch
 
@@ -107,6 +108,7 @@ var ns = clientside["{namespace}"] = clientside["{namespace}"] || {{}};
 ns["{function_name}"] = {clientside_function};
 """
 
+# Run a coroutine outside any event loop
 def runcoro(coro):
     try:
         coro.send(None)
@@ -391,6 +393,7 @@ class Dash(object):
         return None
 
     # modify component in layout, given id and vals (modified values)
+    # todo: clean up this method
     def mod_layout(self, id, vals):
         f = self.find_component(self._layout, id)
         if f!=None:
@@ -408,7 +411,7 @@ class Dash(object):
                 obj[key] = self.serialize(obj[key])
         elif isinstance(obj, list) or isinstance(obj, tuple):
             for i in range(len(obj)):
-                obj[i] = self.serialize(obj[i]);
+                obj[i] = self.serialize(obj[i])
         return obj
      
     # modify component(s) and value(s) 
@@ -421,32 +424,8 @@ class Dash(object):
         for id, val in vals.items():
             self.serialize(val)
         # then send, (put on queues) so all clients are updated
-        for q in self.push_mod_queues:
-            asyncio.run_coroutine_threadsafe(q.put(vals), self.loop)
+        self.pusher.send(vals)
 
-    async def socket_receiver(self):
-        print('*** ws receive')
-        try:
-            while True:
-                print('*** receiving')
-                data = await quart.websocket.receive()
-                print('receive', data)
-        except asyncio.CancelledError:
-            raise
-        finally:
-            print("*** ws receive exit")
-
-    async def socket_sender(self, queue):
-        print('*** ws send', queue)
-        try:
-            while True:
-                print('*** sending')
-                mod = await queue.get()
-                await quart.websocket.send(json.dumps(mod))
-        except asyncio.CancelledError:
-            raise
-        finally:
-            print("*** ws send exit")
 
     def init_app(self, app=None):
         """Initialize the parts of Dash that require a flask app."""
@@ -455,24 +434,7 @@ class Dash(object):
         if app is not None:
             self.server = app
 
-        self.push_mod_queues = []
-        self.loop = None
-
-        # websocket connection handler -- this routine sends component modifications
-        @self.server.websocket('/_dash-update-component-socket')
-        async def update_component_socket():
-            print('**** spawning')
-            if self.loop is None:
-                self.loop = asyncio.get_event_loop()
-            queue = asyncio.Queue()
-            self.push_mod_queues.append(queue)
-            socket_sender = asyncio.create_task(quart.copy_current_websocket_context(self.socket_sender)(queue))
-            socket_receiver = asyncio.create_task(quart.copy_current_websocket_context(self.socket_receiver)())
-            try:
-                await asyncio.gather(socket_sender, socket_receiver)
-            finally:
-                self.push_mod_queues.remove(queue)
-                print('*** exitting')
+        self.pusher = Pusher(self.server)
 
         assets_blueprint_name = "{}{}".format(
             config.routes_pathname_prefix.replace("/", "_"), "dash_assets"
@@ -613,7 +575,6 @@ class Dash(object):
             )
 
             modified = int(os.stat(module_path).st_mtime)
-
             return "{}_dash-component-suites/{}/{}".format(
                 self.config.requests_pathname_prefix,
                 namespace,
@@ -1027,7 +988,8 @@ class Dash(object):
                 g.triggered_inputs = [
                     {"prop_id": x, "value": input_values.get(x)} for x in changed_props
                 ]
-                g.dash_response = response
+                if response is not None:
+                    g.dash_response = response
 
                 args = inputs_to_vals(inputs) + inputs_to_vals(state)
 
@@ -1079,12 +1041,12 @@ class Dash(object):
 
                 return jsonResponse
 
-            coro = inspect.iscoroutinefunction(func);
-            if coro:
+            is_coro = inspect.iscoroutinefunction(func)
+            if is_coro:
                 lock = asyncio.Lock() if service==1 else None
             else:
                 lock = threading.Lock() if service==1 else None 
-            self.callback_map[callback_id]["callback"] = (add_context, coro, lock)
+            self.callback_map[callback_id]["callback"] = (add_context, is_coro, lock)
         
             return add_context
 
@@ -1093,18 +1055,23 @@ class Dash(object):
     async def dispatch(self):
         body = await quart.request.get_json()
         response = quart.Response(None, mimetype="application/json")
-        func, coro, lock = self.callback_map[body["output"]]["callback"]
+        output = await self._call_callback(body, response)
+        response.set_data(output)
+        return response
 
-        if coro:
+    async def _call_callback(self, body, response):
+        func, is_coro, lock = self.callback_map[body["output"]]["callback"]
+
+        if is_coro:
             output = await func(body, response, lock)  # %% callback invoked
         else:
             loop = asyncio.get_event_loop()
             # The callback isn't a coroutine, so we need to run in an executor.
             # Note, there is no easy way to have a wrapper return a coroutine or routine conditionally...
-            # So func is always a coroutine and runcoro() bridges this gap.  
+            # So func is always a coroutine and runcoro() allows us to run a coroutine 
+            # inside executor thread.  
             output = await loop.run_in_executor(None, runcoro, func(body, response, lock))  # %% callback invoked 
-        response.set_data(output)
-        return response
+        return output    
 
     def _setup_server(self):
         # Apply _force_eager_loading overrides from modules
