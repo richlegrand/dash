@@ -41,7 +41,7 @@ import {
 import {computePaths, getPath} from './paths';
 import {STATUS} from '../constants/constants';
 import {applyPersistence, prunePersistence} from '../persistence';
-import {pusheeCallback} from '../pushee'
+import {pusheeRequest} from '../pushee'
 
 import isAppReady from './isAppReady';
 
@@ -437,7 +437,7 @@ function serverInteract(config, payload, service) {
         })    
     }
     else {
-        return pusheeCallback(payload);
+        return pusheeRequest('_dash-update-component', payload);
     }
 }
 

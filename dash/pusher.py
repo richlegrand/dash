@@ -6,8 +6,9 @@ class Pusher:
 
     def __init__(self, server):
         self.server = server
-        self.send_queues = []
+        self.clients = []
         self.loop = None
+        self.url_map = {}
 
         # websocket connection handler 
         @self.server.websocket('/_push')
@@ -16,13 +17,13 @@ class Pusher:
             if self.loop is None:
                 self.loop = asyncio.get_event_loop()
             queue = asyncio.Queue()
-            self.send_queues.append(queue)
+            self.clients.append(queue)
             socket_sender = asyncio.create_task(quart.copy_current_websocket_context(self.socket_sender)(queue))
             socket_receiver = asyncio.create_task(quart.copy_current_websocket_context(self.socket_receiver)())
             try:
                 await asyncio.gather(socket_sender, socket_receiver)
             finally:
-                self.send_queues.remove(queue)
+                self.clients.remove(queue)
                 print('*** exitting')
 
 
@@ -32,7 +33,9 @@ class Pusher:
             while True:
                 print('*** receiving')
                 data = await quart.websocket.receive()
+                data = json.loads(data);
                 print('receive', data)
+                await self.dispatch(data)
         except asyncio.CancelledError:
             raise
         finally:
@@ -52,6 +55,23 @@ class Pusher:
             print("*** ws send exit")
 
 
-    def send(self, data):
-        for q in self.send_queues:
-            asyncio.run_coroutine_threadsafe(q.put(data), self.loop)
+    async def dispatch(self, data):
+        func = self.url_map[data['url']]
+        output = await func(data['data'])
+        output = {'id': data['id'], 'data': output}
+        await quart.websocket.send(json.dumps(output))
+
+    def add_url(self, url, callback):
+        self.url_map[url] = callback
+
+    def send(self, id_, data, client=None):
+        message = {'id': id_, 'data': data}
+
+        # send by putting in event loop
+        # Oddly, push_nowait doesn't get serviced right away, so we use asyncio.run_coroutine_threadsafe
+        if client is None: # send to all clients
+            for client in self.clients:
+                asyncio.run_coroutine_threadsafe(client.put(message), self.loop)
+        else:
+            asyncio.run_coroutine_threadsafe(client.put(message), self.loop)
+        

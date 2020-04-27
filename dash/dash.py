@@ -424,7 +424,7 @@ class Dash(object):
         for id, val in vals.items():
             self.serialize(val)
         # then send, (put on queues) so all clients are updated
-        self.pusher.send(vals)
+        self.pusher.send('mod', vals)
 
 
     def init_app(self, app=None):
@@ -473,6 +473,7 @@ class Dash(object):
         self._add_url("_dash-layout", self.serve_layout)
         self._add_url("_dash-dependencies", self.dependencies)
         self._add_url("_dash-update-component", self.dispatch, ["POST"])
+        self.pusher.add_url("_dash-update-component", lambda data : self.dispatch(data, True))
         self._add_url("_reload-hash", self.serve_reload_hash)
         self._add_url("_favicon.ico", self._serve_default_favicon)
         self._add_url("", self.index)
@@ -518,7 +519,7 @@ class Dash(object):
         _validate.validate_index("index string", checks, value)
         self._index_string = value
 
-    async def serve_layout(self):
+    async def serve_layout(self, socket=False):
         layout = self._layout_value()
 
         # TODO - Set browser cache limit - pass hash into frontend
@@ -851,7 +852,7 @@ class Dash(object):
             app_entry=app_entry,
         )
 
-    async def dependencies(self):
+    async def dependencies(self, socket=False):
         return quart.jsonify(self._callback_list)
 
     def _insert_callback(self, output, inputs, state, service):
@@ -1052,14 +1053,13 @@ class Dash(object):
 
         return wrap_func
 
-    async def dispatch(self):
-        body = await quart.request.get_json()
-        response = quart.Response(None, mimetype="application/json")
-        output = await self._call_callback(body, response)
-        response.set_data(output)
-        return response
+    async def dispatch(self, body=None, socket=False):
+        if socket:
+            response = None
+        else:
+            body = await quart.request.get_json()
+            response = quart.Response(None, mimetype="application/json")
 
-    async def _call_callback(self, body, response):
         func, is_coro, lock = self.callback_map[body["output"]]["callback"]
 
         if is_coro:
@@ -1071,7 +1071,11 @@ class Dash(object):
             # So func is always a coroutine and runcoro() allows us to run a coroutine 
             # inside executor thread.  
             output = await loop.run_in_executor(None, runcoro, func(body, response, lock))  # %% callback invoked 
-        return output    
+        if socket:
+            return output
+        else:    
+            response.set_data(output)
+            return response
 
     def _setup_server(self):
         # Apply _force_eager_loading overrides from modules
