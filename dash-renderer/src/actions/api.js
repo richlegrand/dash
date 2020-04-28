@@ -1,7 +1,7 @@
 import {mergeDeepRight} from 'ramda';
 import {handleAsyncError, getCSRFHeader} from '../actions';
 import {urlBase} from './utils';
-import {pusheeRequest} from '../pushee'
+import {pusheeRequest, services} from '../pushee'
 
 function GET(path, fetchConfig) {
     return fetch(
@@ -36,7 +36,7 @@ export default function apiThunk(endpoint, method, store, id, body) {
             payload: {id, status: 'loading'},
         });
 
-        if (true) {
+        if (config.server_service&services.PUSHEE_OTHER) {
             return pusheeRequest(url).then(json => {
                 dispatch({
                     type: store,

@@ -85,9 +85,6 @@ _re_index_config_id = 'id="_dash-config"', "#_dash-config"
 _re_index_scripts_id = 'src="[^"]*dash[-_]renderer[^"]*"', "dash-renderer"
 _re_renderer_scripts_id = 'id="_dash-renderer', "new DashRenderer"
 
-class _Context(object):
-    # pylint: disable=too-few-public-methods
-    pass
 
 class _NoUpdate(object):
     # pylint: disable=too-few-public-methods
@@ -98,7 +95,38 @@ class _NoUpdate(object):
 no_update = _NoUpdate()
 
 
+class _Context(object):
+    # pylint: disable=too-few-public-methods
+    pass
+
+
 g_cc = ContextVar('calling_context')
+
+
+class Services(object):
+    # Service bits
+    # update component, opposite = http update
+    PUSHER_UPDATE = 1<<0 
+    # dependencies, layout, reload_hash, opposite = http requests
+    PUSHER_OTHER = 1<<1  
+    # not supported for server_service, opposite = initial callback from each client    
+    NO_CLIENT_INITIAL_CALLBACK = 1<<2 
+    # not supported for server_service, opposite = no initial callback on server side
+    SERVER_INITIAL_CALLBACK = 1<<3 
+    # not supported for server_service, opposite = only requesting client gets update
+    ALL_CLIENT_UPDATE = 1<<4
+    # not supported for server_service, opposite = concurrent callbacks
+    SERIALIZED_CALLBACKS = 1<<5
+
+    # callback services
+    S1 = PUSHER_UPDATE + NO_CLIENT_INITIAL_CALLBACK + SERVER_INITIAL_CALLBACK + ALL_CLIENT_UPDATE + SERIALIZED_CALLBACKS
+    S2 = PUSHER_UPDATE + SERIALIZED_CALLBACKS
+
+    # server services
+    PUSHER_ALL = PUSHER_UPDATE + PUSHER_OTHER  
+
+    # server and callback services
+    NORMAL = 0
 
 
 _inline_clientside_template = """
@@ -257,6 +285,8 @@ class Dash(object):
         suppress_callback_exceptions=None,
         show_undo_redo=False,
         plugins=None,
+        server_service=Services.NORMAL, 
+        callback_service=Services.NORMAL,
         **obsolete
     ):
         _validate.check_obsolete(obsolete)
@@ -307,6 +337,8 @@ class Dash(object):
                 "suppress_callback_exceptions", suppress_callback_exceptions, False
             ),
             show_undo_redo=show_undo_redo,
+            server_service=server_service, 
+            callback_service=callback_service,
         )
         self.config.set_read_only(
             [
@@ -401,14 +433,15 @@ class Dash(object):
                 else:
                     raise AttributeError('object {} has no attribute {}.'.format(f, attr))
 
-     
-    # modify component(s) and value(s) 
-    def push_mod(self, vals):
+    
+    # Note, client = None means all clients.
+    def push_mod(self, vals, client=None):
         serialized = {}
         for id, val in vals.items():
-            self.mod_layout(id, val)
+            if client is None: # if we modify all clients, we should modify layout
+                self.mod_layout(id, val)
             serialized[id] = serialize(val)
-        self.pusher.send('mod', serialized)
+        self.pusher.send('mod', serialized, client)
 
 
     def init_app(self, app=None):
@@ -455,13 +488,16 @@ class Dash(object):
             self.serve_component_suites,
         )
         self._add_url("_dash-layout", self.serve_layout, 
-            socket_callback=lambda data : self.serve_layout(True))
+            socket_callback=lambda data : self.serve_layout(True) 
+                if self.config.server_service&Services.PUSHER_OTHER else None)
         self._add_url("_dash-dependencies", self.dependencies, 
-            socket_callback=lambda data : self.dependencies(True))
+            socket_callback=lambda data : self.dependencies(True)
+                if self.config.server_service&Services.PUSHER_OTHER else None)
         self._add_url("_dash-update-component", self.dispatch, ["POST"], 
             socket_callback=lambda data : self.dispatch(data, True))
         self._add_url("_reload-hash", self.serve_reload_hash, 
-            socket_callback=lambda data : self.serve_reload_hash(True))
+            socket_callback=lambda data : self.serve_reload_hash(True)
+                if self.config.server_service&Services.PUSHER_OTHER else None)
         self._add_url("_favicon.ico", self._serve_default_favicon)
         self._add_url("", self.index)
 
@@ -530,6 +566,7 @@ class Dash(object):
             "props_check": self._dev_tools.props_check,
             "show_undo_redo": self.config.show_undo_redo,
             "suppress_callback_exceptions": self.config.suppress_callback_exceptions,
+            "server_service": self.config.server_service,
         }
         if self._dev_tools.hot_reload:
             config["hot_reload"] = {
@@ -964,9 +1001,15 @@ class Dash(object):
         }
 
     def callback_s1(self, output, inputs, state=()):
-        return self.callback(output, inputs, state, 1)
+        return self.callback(output, inputs, state, Services.S1)
 
-    def callback(self, output, inputs, state=(), service=0):
+    def callback_s2(self, output, inputs, state=()):
+        return self.callback(output, inputs, state, Services.S2)
+
+    def callback(self, output, inputs, state=(), service=None):
+        # if service isn't set, set to default callback service
+        if service is None:
+            service = self.config.callback_service 
         callback_id = self._insert_callback(output, inputs, state, service)
         multi = isinstance(output, (list, tuple))
 
@@ -1042,9 +1085,9 @@ class Dash(object):
 
             is_coro = inspect.iscoroutinefunction(func)
             if is_coro:
-                lock = asyncio.Lock() if service==1 else None
+                lock = asyncio.Lock() if service&Services.SERIALIZED_CALLBACKS else None
             else:
-                lock = threading.Lock() if service==1 else None 
+                lock = threading.Lock() if service&Services.SERIALIZED_CALLBACKS else None 
             self.callback_map[callback_id]["callback"] = (add_context, is_coro, lock)
         
             return add_context

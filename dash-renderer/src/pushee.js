@@ -97,11 +97,24 @@ const pushee = {
             	console.log('cannot find ' + id);
         }
     },
-}
+};
+
+
+export const services = {
+    // Service bits
+    // update component, opposite = http update
+    PUSHEE_UPDATE: 1<<0, 
+    // dependencies, layout, reload_hash, opposite = http requests
+    PUSHEE_OTHER: 1<<1,  
+    // not supported for server_service, opposite = initial callback from each client
+    NO_CLIENT_INITIAL_CALLBACK: 1<<2,
+}; 
+
 
 export function pusheeAdd(props, setProps) {
 	pushee.add(props, setProps);
 }
+
 
 export function pusheeRequest(url, data=null) {
     return pushee.request(url, data);   

@@ -41,7 +41,7 @@ import {
 import {computePaths, getPath} from './paths';
 import {STATUS} from '../constants/constants';
 import {applyPersistence, prunePersistence} from '../persistence';
-import {pusheeRequest} from '../pushee'
+import {pusheeRequest, services} from '../pushee'
 
 import isAppReady from './isAppReady';
 
@@ -417,7 +417,7 @@ function fillVals(paths, layout, cb, specs, depType) {
 }
 
 function serverInteract(config, payload, service) {
-    if (service===0) {
+    if ((service&services.PUSHEE_UPDATE)===0 && (config.server_service&services.PUSHEE_UPDATE)===0) {
         return fetch(
             `${urlBase(config)}_dash-update-component`,
             mergeDeepRight(config.fetch, {

@@ -41,6 +41,8 @@ import {crawlLayout} from './utils';
 
 import Registry from '../registry';
 
+import {services} from '../pushee'
+
 /*
  * If this update is for multiple outputs, then it has
  * starting & trailing `..` and each propId pair is separated
@@ -1213,7 +1215,7 @@ export function getCallbacksInLayout(graphs, paths, layoutChunk, opts) {
                     callbacks[foundIndex].changedPropIds,
                     callback.changedPropIds
                 );
-            } else if (callback.callback.service===0) {
+            } else if ((callback.callback.service&services.NO_CLIENT_INITIAL_CALLBACK)===0) {
                 foundCbIds[callback.resolvedId] = callbacks.length;
                 callbacks.push(callback);
             }
