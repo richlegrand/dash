@@ -1040,7 +1040,7 @@ class Dash(object):
                 except TypeError:
                     _validate.fail_callback_output(output_value, output)
 
-                return jsonResponse
+                return jsonResponse, response
 
             is_coro = inspect.iscoroutinefunction(func)
             if is_coro:
@@ -1063,18 +1063,18 @@ class Dash(object):
         func, is_coro, lock = self.callback_map[body["output"]]["callback"]
 
         if is_coro:
-            output = await func(body, response, lock)  # %% callback invoked
+            json_output, output = await func(body, response, lock)  # %% callback invoked
         else:
             loop = asyncio.get_event_loop()
             # The callback isn't a coroutine, so we need to run in an executor.
             # Note, there is no easy way to have a wrapper return a coroutine or routine conditionally...
             # So func is always a coroutine and runcoro() allows us to run a coroutine 
             # inside executor thread.  
-            output = await loop.run_in_executor(None, runcoro, func(body, response, lock))  # %% callback invoked 
+            json_output, output = await loop.run_in_executor(None, runcoro, func(body, response, lock))  # %% callback invoked 
         if socket:
             return output
         else:    
-            response.set_data(output)
+            response.set_data(json_output)
             return response
 
     def _setup_server(self):

@@ -52,9 +52,11 @@ const pushee = {
 	    console.log(event.data);
         const data = JSON.parse(event.data)
         if (data.id==='mod')
-            pushee.update(data.data)
-        else if (data.id in pushee.pending) 
+            pushee.update(data.data);
+        else if (data.id in pushee.pending) {
             pushee.pending[data.id](data.data);
+            delete pushee.pending[data.id];
+        }
     },	
 
     send: function(data) {
@@ -65,10 +67,6 @@ const pushee = {
             pushee.socket.send(JSON.stringify(data));
     },
 
-    baz: function baz() {
-        pushee.pending['dummy6.children']({multi: true, response: {dummy6: {children: null}}});
-    },
-
     request: function(url, data){
         pushee.checkPending();
         const p = new Promise(resolve => pushee.pending[pushee.requestNum] = resolve);
@@ -77,14 +75,6 @@ const pushee = {
             d['data'] = data;
         pushee.send(d);
         pushee.requestNum++;
-        return p;
-    },
-
-    callback: function(payload) {
-        console.log(payload)
-        //pushee.socket.send(JSON.stringify(payload));
-        const p = new Promise(resolve => pushee.pending[payload.output] = resolve);
-        setTimeout(pushee.baz, 2000);
         return p;
     },
 
