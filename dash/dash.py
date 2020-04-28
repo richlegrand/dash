@@ -11,7 +11,6 @@ import pkgutil
 import threading
 import re
 import logging
-import copy
 
 from functools import wraps
 
@@ -47,7 +46,7 @@ from ._utils import (
     stringify_id,
     strip_relative_path,
 )
-from .pusher import Pusher
+from .pusher import Pusher, serialize
 from . import _validate
 from . import _watch
 
@@ -386,45 +385,30 @@ class Dash(object):
             if isinstance(obj.children, list) or isinstance(obj.children, tuple):
                 for c in obj.children:
                     res = self.find_component(c, id)
-                    if res!=None:
+                    if res is not None:
                         return res
             else:
                 return self.find_component(obj.children, id)
         return None
 
     # modify component in layout, given id and vals (modified values)
-    # todo: clean up this method
     def mod_layout(self, id, vals):
         f = self.find_component(self._layout, id)
-        if f!=None:
+        if f is not None:
             for attr, val in vals.items():
                 if hasattr(f, attr):
-                    exec('f.'+attr+'=val')
+                    setattr(f, attr, val)
+                else:
+                    raise AttributeError('object {} has no attribute {}.'.format(f, attr))
 
-    # serialize component to send over websocket
-    # todo: clean up this method
-    def serialize(self, obj):
-        if 'to_plotly_json' in dir(obj):
-            obj = self.serialize(obj.to_plotly_json())
-        elif isinstance(obj, dict):
-            for key in obj:
-                obj[key] = self.serialize(obj[key])
-        elif isinstance(obj, list) or isinstance(obj, tuple):
-            for i in range(len(obj)):
-                obj[i] = self.serialize(obj[i])
-        return obj
      
     # modify component(s) and value(s) 
     def push_mod(self, vals):
-        # update layout, if it's in the local layout
+        serialized = {}
         for id, val in vals.items():
-            # Make a separate copy for ourself (won't be affected by serialize.)
-            self.mod_layout(id, copy.deepcopy(val))
-        # serialize the values 
-        for id, val in vals.items():
-            self.serialize(val)
-        # then send, (put on queues) so all clients are updated
-        self.pusher.send('mod', vals)
+            self.mod_layout(id, val)
+            serialized[id] = serialize(val)
+        self.pusher.send('mod', serialized)
 
 
     def init_app(self, app=None):
@@ -470,21 +454,21 @@ class Dash(object):
             "_dash-component-suites/<string:package_name>/<path:fingerprinted_path>",
             self.serve_component_suites,
         )
-        self._add_url("_dash-layout", self.serve_layout)
-        self.pusher.add_url("_dash-layout", lambda data : self.serve_layout(True))
-        self._add_url("_dash-dependencies", self.dependencies)
-        self.pusher.add_url("_dash-dependencies", lambda data : self.dependencies(True))
-        self._add_url("_dash-update-component", self.dispatch, ["POST"])
-        self.pusher.add_url("_dash-update-component", lambda data : self.dispatch(data, True))
-        self._add_url("_reload-hash", self.serve_reload_hash)
-        self.pusher.add_url("_reload-hash", lambda data : self.serve_reload_hash(True))
+        self._add_url("_dash-layout", self.serve_layout, 
+            socket_callback=lambda data : self.serve_layout(True))
+        self._add_url("_dash-dependencies", self.dependencies, 
+            socket_callback=lambda data : self.dependencies(True))
+        self._add_url("_dash-update-component", self.dispatch, ["POST"], 
+            socket_callback=lambda data : self.dispatch(data, True))
+        self._add_url("_reload-hash", self.serve_reload_hash, 
+            socket_callback=lambda data : self.serve_reload_hash(True))
         self._add_url("_favicon.ico", self._serve_default_favicon)
         self._add_url("", self.index)
 
         # catch-all for front-end routes, used by dcc.Location
         self._add_url("<path:path>", self.index)
 
-    def _add_url(self, name, view_func, methods=("GET",)):
+    def _add_url(self, name, view_func, methods=("GET",), socket_callback=None):
         full_name = self.config.routes_pathname_prefix + name
 
         self.server.add_url_rule(
@@ -494,6 +478,9 @@ class Dash(object):
         # record the url in Dash.routes so that it can be accessed later
         # e.g. for adding authentication with flask_login
         self.routes.append(full_name)
+
+        if socket_callback is not None:
+            self.pusher.add_url(name, socket_callback)
 
     @property
     def layout(self):

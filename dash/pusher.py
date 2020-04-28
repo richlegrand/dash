@@ -3,7 +3,6 @@ import json
 import quart
 
 def serialize(obj):
-    res = obj
     if hasattr(obj, 'to_plotly_json'):
         res = serialize(obj.to_plotly_json())
     elif isinstance(obj, dict):
@@ -14,6 +13,8 @@ def serialize(obj):
         res = []
         for i in obj:
             res.append(serialize(i))
+    else:
+        return obj
     return res
 
 
@@ -48,7 +49,8 @@ class Pusher:
             while True:
                 data = await quart.websocket.receive()
                 data = json.loads(data);
-                await self.dispatch(data)
+                # Create new task so we can handle more messages, keep things snappy.
+                asyncio.create_task(quart.copy_current_websocket_context(self.dispatch)(data))
         except asyncio.CancelledError:
             raise
         finally:
@@ -59,7 +61,6 @@ class Pusher:
         print('*** ws send', queue)
         try:
             while True:
-                print('*** sending')
                 mod = await queue.get()
                 await quart.websocket.send(json.dumps(mod))
         except asyncio.CancelledError:
