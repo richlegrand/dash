@@ -2,6 +2,21 @@ import asyncio
 import json
 import quart
 
+def serialize(obj):
+    res = obj
+    if hasattr(obj, 'to_plotly_json'):
+        res = serialize(obj.to_plotly_json())
+    elif isinstance(obj, dict):
+        res = {}
+        for key in obj:
+            res[key] = serialize(obj[key])
+    elif isinstance(obj, list) or isinstance(obj, tuple):
+        res = []
+        for i in obj:
+            res.append(serialize(i))
+    return res
+
+
 class Pusher:
 
     def __init__(self, server):
@@ -31,10 +46,8 @@ class Pusher:
         print('*** ws receive')
         try:
             while True:
-                print('*** receiving')
                 data = await quart.websocket.receive()
                 data = json.loads(data);
-                print('receive', data)
                 await self.dispatch(data)
         except asyncio.CancelledError:
             raise
@@ -56,10 +69,18 @@ class Pusher:
 
 
     async def dispatch(self, data):
-        func = self.url_map[data['url']]
+        index = data['url']
+        if index.startswith('/'):
+            index = index[1:]
+        print('*** url', index, data['data'])
+        func = self.url_map[index]
         output = await func(data['data'])
         output = {'id': data['id'], 'data': output}
-        await quart.websocket.send(json.dumps(output))
+        try:
+            json_ = json.dumps(output)
+        except TypeError:
+            json_ = json.dumps(serialize(output)) 
+        await quart.websocket.send(json_)
 
     def add_url(self, url, callback):
         self.url_map[url] = callback

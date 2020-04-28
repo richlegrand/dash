@@ -471,10 +471,13 @@ class Dash(object):
             self.serve_component_suites,
         )
         self._add_url("_dash-layout", self.serve_layout)
+        self.pusher.add_url("_dash-layout", lambda data : self.serve_layout(True))
         self._add_url("_dash-dependencies", self.dependencies)
+        self.pusher.add_url("_dash-dependencies", lambda data : self.dependencies(True))
         self._add_url("_dash-update-component", self.dispatch, ["POST"])
         self.pusher.add_url("_dash-update-component", lambda data : self.dispatch(data, True))
         self._add_url("_reload-hash", self.serve_reload_hash)
+        self.pusher.add_url("_reload-hash", lambda data : self.serve_reload_hash(True))
         self._add_url("_favicon.ico", self._serve_default_favicon)
         self._add_url("", self.index)
 
@@ -522,11 +525,14 @@ class Dash(object):
     async def serve_layout(self, socket=False):
         layout = self._layout_value()
 
-        # TODO - Set browser cache limit - pass hash into frontend
-        return quart.Response(
-            json.dumps(layout, cls=plotly.utils.PlotlyJSONEncoder),
-            mimetype="application/json",
-        )
+        if socket:
+            return layout
+        else:
+            # TODO - Set browser cache limit - pass hash into frontend
+            return quart.Response(
+                json.dumps(layout, cls=plotly.utils.PlotlyJSONEncoder),
+                mimetype="application/json",
+            )
 
     def _config(self):
         # pieces of config needed by the front end
@@ -546,7 +552,7 @@ class Dash(object):
             }
         return config
 
-    async def serve_reload_hash(self):
+    async def serve_reload_hash(self, socket=True):
         _reload = self._hot_reload
         with _reload.lock:
             hard = _reload.hard
@@ -555,14 +561,16 @@ class Dash(object):
             _reload.hard = False
             _reload.changed_assets = []
 
-        return quart.jsonify(
-            {
-                "reloadHash": _hash,
-                "hard": hard,
-                "packages": list(self.registered_paths.keys()),
-                "files": list(changed),
-            }
-        )
+        res = {
+            "reloadHash": _hash,
+            "hard": hard,
+            "packages": list(self.registered_paths.keys()),
+            "files": list(changed),
+        }
+        if socket:
+            return res
+        else:
+            return quart.jsonify(res)
 
     def _collect_and_register_resources(self, resources):
         # now needs the app context.
@@ -853,7 +861,10 @@ class Dash(object):
         )
 
     async def dependencies(self, socket=False):
-        return quart.jsonify(self._callback_list)
+        if socket:
+            return self._callback_list
+        else:
+            return quart.jsonify(self._callback_list)
 
     def _insert_callback(self, output, inputs, state, service):
         _validate.validate_callback(output, inputs, state)

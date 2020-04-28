@@ -1,6 +1,7 @@
 import {mergeDeepRight} from 'ramda';
 import {handleAsyncError, getCSRFHeader} from '../actions';
 import {urlBase} from './utils';
+import {pusheeRequest} from '../pushee'
 
 function GET(path, fetchConfig) {
     return fetch(
@@ -34,36 +35,52 @@ export default function apiThunk(endpoint, method, store, id, body) {
             type: store,
             payload: {id, status: 'loading'},
         });
-        return request[method](url, config.fetch, body)
-            .then(res => {
-                const contentType = res.headers.get('content-type');
-                if (
-                    contentType &&
-                    contentType.indexOf('application/json') !== -1
-                ) {
-                    return res.json().then(json => {
-                        dispatch({
-                            type: store,
-                            payload: {
-                                status: res.status,
-                                content: json,
-                                id,
-                            },
-                        });
-                        return json;
-                    });
-                }
-                return dispatch({
+
+        if (true) {
+            return pusheeRequest(url).then(json => {
+                dispatch({
                     type: store,
                     payload: {
+                        status: 200,
+                        content: json,
                         id,
-                        status: res.status,
                     },
                 });
-            })
-            .catch(err => {
-                const message = 'Error from API call: ' + endpoint;
-                handleAsyncError(err, message, dispatch);
+                return json;
             });
+        }
+        else {
+            return request[method](url, config.fetch, body)
+                .then(res => {
+                    const contentType = res.headers.get('content-type');
+                    if (
+                        contentType &&
+                        contentType.indexOf('application/json') !== -1
+                    ) {
+                        return res.json().then(json => {
+                            dispatch({
+                                type: store,
+                                payload: {
+                                    status: res.status,
+                                    content: json,
+                                    id,
+                                },
+                            });
+                            return json;
+                        });
+                    }
+                    return dispatch({
+                        type: store,
+                        payload: {
+                            id,
+                            status: res.status,
+                        },
+                    });
+                })
+                .catch(err => {
+                    const message = 'Error from API call: ' + endpoint;
+                    handleAsyncError(err, message, dispatch);
+                });
+        }
     };
 }

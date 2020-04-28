@@ -48,8 +48,6 @@ const pushee = {
 	},
 
 	receive: function(event) {
-		console.log('receive')
-	    console.log(event.data);
         const data = JSON.parse(event.data)
         if (data.id==='mod')
             pushee.update(data.data);
@@ -71,7 +69,7 @@ const pushee = {
         pushee.checkPending();
         const p = new Promise(resolve => pushee.pending[pushee.requestNum] = resolve);
         const d = {id: pushee.requestNum, url: url};
-        if (data!==null) 
+        if (data!==undefined) 
             d['data'] = data;
         pushee.send(d);
         pushee.requestNum++;
