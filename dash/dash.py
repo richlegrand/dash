@@ -46,7 +46,7 @@ from ._utils import (
     stringify_id,
     strip_relative_path,
 )
-from .pusher import Pusher, serialize
+from .pusher import Pusher
 from . import _validate
 from . import _watch
 
@@ -112,14 +112,15 @@ class Services(object):
     # not supported for server_service, opposite = initial callback from each client    
     NO_CLIENT_INITIAL_CALLBACK = 1<<2 
     # not supported for server_service, opposite = no initial callback on server side
-    SERVER_INITIAL_CALLBACK = 1<<3 
+    SERVER_INITIAL_CALLBACK = 1<<3
     # not supported for server_service, opposite = only requesting client gets update
-    ALL_CLIENT_UPDATE = 1<<4
+    SHARED_CALLBACK = 1<<4
     # not supported for server_service, opposite = concurrent callbacks
     SERIALIZED_CALLBACKS = 1<<5
 
     # callback services
-    S1 = PUSHER_UPDATE + NO_CLIENT_INITIAL_CALLBACK + SERVER_INITIAL_CALLBACK + ALL_CLIENT_UPDATE + SERIALIZED_CALLBACKS
+    S1 = PUSHER_UPDATE + NO_CLIENT_INITIAL_CALLBACK + SHARED_CALLBACK + \
+        SERVER_INITIAL_CALLBACK + SERIALIZED_CALLBACKS
     S2 = PUSHER_UPDATE + SERIALIZED_CALLBACKS
 
     # server services
@@ -127,6 +128,10 @@ class Services(object):
 
     # server and callback services
     NORMAL = 0
+
+    @staticmethod
+    def shared_test(service):
+        return service&Services.SHARED_CALLBACK
 
 
 _inline_clientside_template = """
@@ -423,25 +428,72 @@ class Dash(object):
                 return self.find_component(obj.children, id)
         return None
 
-    # modify component in layout, given id and vals (modified values)
-    def mod_layout(self, id, vals):
-        f = self.find_component(self._layout, id)
-        if f is not None:
-            for attr, val in vals.items():
-                if hasattr(f, attr):
-                    setattr(f, attr, val)
-                else:
-                    raise AttributeError('object {} has no attribute {}.'.format(f, attr))
+    def list_to_mods(self, list_):
+        mods = {}
+        for i in list_:
+            id_ = i['id']
+            if id_ in mods: 
+                mods[id_][i['property']] = i['value']
+            else:
+                mods[id_] = {i['property']: i['value']}
+        return mods
 
-    
-    # Note, client = None means all clients.
-    def push_mod(self, vals, client=None):
-        serialized = {}
-        for id, val in vals.items():
-            if client is None: # if we modify all clients, we should modify layout
-                self.mod_layout(id, val)
-            serialized[id] = serialize(val)
-        self.pusher.send('mod', serialized, client)
+    def mods_to_list(self, mods):
+        list_ = []
+        for id_, vals in mods.items():
+            for prop, val in vals.items():
+                list_.append({'id': id_, 'property': prop, 'value': val})
+        return list_
+
+    # modify component in layout, given id and vals (modified values)
+    def mod_layout(self, mods):
+        if isinstance(self._layout, patch_collections_abc("Callable")):
+            raise Exception('Cannot use push_mods or shared callbacks if layout is a function.')
+        if isinstance(mods, list):
+            mods = list_to_mods(mods)
+        for id_, vals in mods.items():
+            comp = self.find_component(self._layout, id_)
+            if comp is not None:
+                for prop, val in vals.items():
+                    if hasattr(comp, prop):
+                        setattr(comp, prop, val)
+                    else: 
+                        # setattr won't raise an exception here, so we will.
+                        raise AttributeError('object {} has no attribute {}.'.format(f, attr))
+
+        
+    async def push_mods_coro(self, mods, client=None):
+        if isinstance(mods, list):
+            props = mods
+            mods = self.list_to_mods(props)
+        else:
+            props = self.mods_to_list(mods)
+        # If we modify all clients, we should modify layout.
+        if client is None: 
+            self.mod_layout(mods)
+
+        tasks = []
+        output_list = self.callback_intersect(props, lambda service : True)
+        if output_list:
+            for output in output_list:
+                service = self.callback_map[output]['service']
+                if Services.shared_test(service):
+                    if client is not None:
+                        raise ('Can only call push_mods() on shared callback for all clients.')
+                    tasks.append(asyncio.create_task(self.callback_chain(props)))
+                else:
+                    tasks.append(asyncio.create_task(self.pusher.send('mod_n', mods, client)))
+            for task in tasks:
+                await task
+        else:
+            await self.pusher.send('mod', mods, client)
+
+
+
+    # Note, client==None means all clients.
+    def push_mods(self, mods, client=None):
+        if self.pusher.loop is not None:
+            asyncio.run_coroutine_threadsafe(self.push_mods_coro(mods, client), self.pusher.loop)
 
 
     def init_app(self, app=None):
@@ -494,7 +546,7 @@ class Dash(object):
             socket_callback=lambda data : self.dependencies(True)
                 if self.config.server_service&Services.PUSHER_OTHER else None)
         self._add_url("_dash-update-component", self.dispatch, ["POST"], 
-            socket_callback=lambda data : self.dispatch(data, True))
+            socket_callback=self.socket_dispatch)
         self._add_url("_reload-hash", self.serve_reload_hash, 
             socket_callback=lambda data : self.serve_reload_hash(True)
                 if self.config.server_service&Services.PUSHER_OTHER else None)
@@ -903,6 +955,8 @@ class Dash(object):
         self.callback_map[callback_id] = {
             "inputs": callback_spec["inputs"],
             "state": callback_spec["state"],
+            "outputs": [c.to_dict() for c in output] if isinstance(output, list) else output.to_dict(),
+            "service": service,
         }
         self._callback_list.append(callback_spec)
 
@@ -1015,7 +1069,7 @@ class Dash(object):
 
         def wrap_func(func):
             @wraps(func)
-            async def add_context(body, response, lock=None):
+            async def add_context(body, response, service, lock):
                 g = _Context()  
                 g_cc.set(g)          
                 g.inputs_list = inputs = body.get("inputs", [])
@@ -1034,6 +1088,10 @@ class Dash(object):
                     g.dash_response = response
 
                 args = inputs_to_vals(inputs) + inputs_to_vals(state)
+
+                # remember args for shared callbacks
+                if Services.shared_test(service):
+                    self.callback_map[output]["args"] = {"inputs": inputs, "state": state}
 
                 if lock is not None:
                     lock.acquire()
@@ -1088,12 +1146,20 @@ class Dash(object):
                 lock = asyncio.Lock() if service&Services.SERIALIZED_CALLBACKS else None
             else:
                 lock = threading.Lock() if service&Services.SERIALIZED_CALLBACKS else None 
-            self.callback_map[callback_id]["callback"] = (add_context, is_coro, lock)
+            self.callback_map[callback_id]["callback"] = add_context, is_coro, service, lock
         
             return add_context
 
         return wrap_func
 
+    # We need this method to deal with PreventUpdate correctly.
+    async def socket_dispatch(self, body):
+        try:
+            res = await self.dispatch(body, True)
+        except PreventUpdate:
+            return None
+        return res
+            
     async def dispatch(self, body=None, socket=False):
         if socket:
             response = None
@@ -1101,22 +1167,142 @@ class Dash(object):
             body = await quart.request.get_json()
             response = quart.Response(None, mimetype="application/json")
 
-        func, is_coro, lock = self.callback_map[body["output"]]["callback"]
+        func, is_coro, service, lock = self.callback_map[body["output"]]["callback"]
 
         if is_coro:
-            json_output, output = await func(body, response, lock)  # %% callback invoked
+            json_output, output = await func(body, response, service, lock)  # %% callback invoked
         else:
             loop = asyncio.get_event_loop()
             # The callback isn't a coroutine, so we need to run in an executor.
             # Note, there is no easy way to have a wrapper return a coroutine or routine conditionally...
             # So func is always a coroutine and runcoro() allows us to run a coroutine 
             # inside executor thread.  
-            json_output, output = await loop.run_in_executor(None, runcoro, func(body, response, lock))  # %% callback invoked 
+            json_output, output = await loop.run_in_executor(None, runcoro, func(body, response, service, lock))  # %% callback invoked 
+
         if socket:
             return output
         else:    
             response.set_data(json_output)
             return response
+
+    def intersect_ids(self, list0, list1):
+        id0 = [i['id'] for i in list0]
+        id1 = [i['id'] for i in list1]
+        return list(set(id0).intersection(id1))
+
+    def intersect_ids_props(self, list0, list1):
+        id0 = [i['id'] + '.' + i['property'] for i in list0]
+        id1 = [i['id'] + '.' + i['property'] for i in list1]
+        return list(set(id0).intersection(id1))
+
+    # return a list of callbacks (output ids)
+    def callback_test(self, props, service_test, test):
+        callbacks = []
+        for output, callback in self.callback_map.items():
+            if service_test(callback['service']) and test(callback["inputs"]):
+                callbacks.append(output)
+        return callbacks
+
+    def callback_intersect(self, props, service_test):
+        return self.callback_test(props, service_test, lambda i : self.intersect_ids(i, props))
+
+    def callback_diff(self, props, service_test):
+        return self.callback_test(props, service_test, lambda i : not self.intersect_ids(i, props))
+
+    def callback_body(self, output, inputs_test):
+        # callback body consists of: 
+        # {'output': _, 'outputs': [], 'inputs': [], 'changedPropIds': [], 'state': []}
+        callback = self.callback_map[output]
+        if 'args' in callback:
+            body = callback['args'].copy()
+        else: # construct from layout
+            inputs_ = callback['inputs'].copy()
+            for i in inputs_:
+                comp = self.find_component(i['id'])
+                i['value'] = getattr(comp, i['property'], None)
+            state = callback['state'].copy()    
+            for s in state:
+                comp = self.find_component(s['id'])
+                s['value'] = getattr(comp, s['property'], None)
+            body = {'inputs': inputs_, 'state': state}
+        # add inputs
+        changedPropIds = []
+        for i in inputs:
+            changedPropIds.append(i['id'] + '.' + i['property'])
+            for j in body['inputs']:
+                if i['id']==j['id'] and i['property']==j['property'] and 'value' in i:
+                    j['value'] = i['value']
+        body['changedPropIds'] = changedPropIds
+        body['output'] = output
+        body['outputs'] = callback['outputs'].copy()
+
+        return body
+
+    # call all callbacks, return results in a list [{'id': _, 'property': _, 'value': _}, ...] 
+    async def dispatch_callbacks(self, bodies):
+        tasks = []
+        for body in bodies:
+            tasks.append(asyncio.create_task(self.dispatch(body, True)))
+
+        outputs = []
+        for task in tasks:
+            result = await task
+            outputs = self.mods_to_list(result['response'])
+        return outputs
+
+    async def callback_chain(self, props, service_test=Services.shared_test):
+        while True:
+            output_list = self.callback_intersect(props, service_test)
+            if not output_list:
+                break
+            bodies = [callback_body(output, props) for output in output_list]
+            outputs = await dispatch_callbacks(bodies)
+            mods = self.list_to_mods(props+outputs)
+            await self.pusher.send('mod', mods) 
+            props = outputs
+
+    async def handle_mods(self, mods):
+        pass
+
+    async def initial_callbacks(self):
+        # Find the outputs of all callbacks that have SERVER_INITIAL_CALLBACK set.
+        outputs = []
+        all_output_list = []
+        service_bits = Services.SERVER_INITIAL_CALLBACK + Services.SHARED_CALLBACK
+        service_test = lambda service : (service&(service_bits))==service_bits
+        for output, callback in self.callback_map.items():
+            if service_test(callback['service']):
+                outputs.extend(callback['outputs'])
+                all_output_list.append(output)
+
+        # Find all callbacks that don't have any outputs as inputs (and meet service_test).
+        # These are the callbacks at the top of any callback chains.  We will call them first...
+        output_list = self.callback_diff(outputs, service_test)
+        bodies = [self.callback_body(output, []) for output in output_list]
+        outputs = await dispatch_callbacks(bodies)
+        self.mod_layout(outputs)
+        # Add outputs from this level in case any PreventUpdates were raised.
+        for output in output_list:
+            for i in self.callback_map[output]['outputs']:
+                if not self.intersect_ids_props([i], outputs):
+                    outputs.append(i)
+
+        # Loop through callback chains level-by-level...
+        while True:
+            output_list = self.callback_intersect(outputs, service_test)
+            if not output_list:
+                break
+            bodies = [self.callback_body(output, outputs) for output in output_list]
+            outputs = await dispatch_callbacks(bodies)
+            self.mod_layout(outputs)
+            # Add outputs from this level in case any PreventUpdates are raised.
+            for output in output_list:
+                for i in self.callback_map[output]['outputs']:
+                    if not self.intersect_ids_props([i], outputs):
+                        outputs.append(i)
+        # Final check
+        for output in all_output_list:
+            assert 'args' in self.callback_map[output], '{} callback was not called!'.format(output)
 
     def _setup_server(self):
         # Apply _force_eager_loading overrides from modules

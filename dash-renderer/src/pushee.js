@@ -50,7 +50,9 @@ const pushee = {
 	receive: function(event) {
         const data = JSON.parse(event.data)
         if (data.id==='mod')
-            pushee.update(data.data);
+            pushee.update(data.data, false);
+        else if (data.id==='mod_n')
+            pushee.update(data.data, true);
         else if (data.id in pushee.pending) {
             pushee.pending[data.id](data.data);
             delete pushee.pending[data.id];
@@ -88,11 +90,11 @@ const pushee = {
             pushee.socket.send(JSON.stringify(data));
     },
 
-    update: function(data) {
+    update: function(data, notify) {
         const ids = Object.keys(data);
         for (const id of ids) {
             if (id in pushee.setProps)
-            	pushee.setProps[id](data[id], false);
+            	pushee.setProps[id](data[id], notify);
             else
             	console.log('cannot find ' + id);
         }

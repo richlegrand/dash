@@ -62,7 +62,11 @@ class Pusher:
         try:
             while True:
                 mod = await queue.get()
-                await quart.websocket.send(json.dumps(mod))
+                try:
+                    json_ = json.dumps(mod)
+                except TypeError:
+                    json_ = json.dumps(serialize(mod)) 
+                await quart.websocket.send(json_)
         except asyncio.CancelledError:
             raise
         finally:
@@ -76,6 +80,7 @@ class Pusher:
         print('*** url', index, data['data'])
         func = self.url_map[index]
         output = await func(data['data'])
+        # copy id into reply message
         output = {'id': data['id'], 'data': output}
         try:
             json_ = json.dumps(output)
@@ -86,14 +91,14 @@ class Pusher:
     def add_url(self, url, callback):
         self.url_map[url] = callback
 
-    def send(self, id_, data, client=None):
+    async def send(self, id_, data, client=None):
         message = {'id': id_, 'data': data}
 
         # send by putting in event loop
         # Oddly, push_nowait doesn't get serviced right away, so we use asyncio.run_coroutine_threadsafe
         if client is None: # send to all clients
             for client in self.clients:
-                asyncio.run_coroutine_threadsafe(client.put(message), self.loop)
+                await client.put(message)
         else:
-            asyncio.run_coroutine_threadsafe(client.put(message), self.loop)
+            await client.put(message)
         
