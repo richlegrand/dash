@@ -1,6 +1,7 @@
 import asyncio
 import json
 import quart
+import time
 
 def serialize(obj):
     if hasattr(obj, 'to_plotly_json'):
@@ -18,6 +19,11 @@ def serialize(obj):
     return res
 
 
+class Client:
+    def __init__(self):
+        self.send_queue = asyncio.Queue()
+        self.connect_time = time.time()
+
 class Pusher:
 
     def __init__(self, server):
@@ -32,36 +38,36 @@ class Pusher:
             print('**** spawning')
             if self.loop is None:
                 self.loop = asyncio.get_event_loop()
-            queue = asyncio.Queue()
-            self.clients.append(queue)
-            socket_sender = asyncio.create_task(quart.copy_current_websocket_context(self.socket_sender)(queue))
-            socket_receiver = asyncio.create_task(quart.copy_current_websocket_context(self.socket_receiver)())
+            client = Client()
+            self.clients.append(client)
+            socket_sender = asyncio.create_task(quart.copy_current_websocket_context(self.socket_sender)(client))
+            socket_receiver = asyncio.create_task(quart.copy_current_websocket_context(self.socket_receiver)(client))
             try:
                 await asyncio.gather(socket_sender, socket_receiver)
             finally:
-                self.clients.remove(queue)
+                self.clients.remove(client)
                 print('*** exitting')
 
 
-    async def socket_receiver(self):
+    async def socket_receiver(self, client):
         print('*** ws receive')
         try:
             while True:
                 data = await quart.websocket.receive()
                 data = json.loads(data);
                 # Create new task so we can handle more messages, keep things snappy.
-                asyncio.create_task(quart.copy_current_websocket_context(self.dispatch)(data))
+                asyncio.create_task(quart.copy_current_websocket_context(self.dispatch)(data, client))
         except asyncio.CancelledError:
             raise
         finally:
             print("*** ws receive exit")
 
 
-    async def socket_sender(self, queue):
-        print('*** ws send', queue)
+    async def socket_sender(self, client):
+        print('*** ws send')
         try:
             while True:
-                mod = await queue.get()
+                mod = await client.send_queue.get()
                 try:
                     json_ = json.dumps(mod)
                 except TypeError:
@@ -73,32 +79,36 @@ class Pusher:
             print("*** ws send exit")
 
 
-    async def dispatch(self, data):
+    async def dispatch(self, data, client):
         index = data['url']
         if index.startswith('/'):
             index = index[1:]
-        print('*** url', index, data['data'])
+
+        print('*** url', index, data['id'], data['data'])
         func = self.url_map[index]
-        output = await func(data['data'])
-        # copy id into reply message
-        output = {'id': data['id'], 'data': output}
+        await func(data['data'], client, data['id'])
+
+    async def respond(self, data, request_id):
+        assert request_id is not None
+        data = {'id': request_id, 'data': data}
         try:
-            json_ = json.dumps(output)
+            json_ = json.dumps(data)
         except TypeError:
-            json_ = json.dumps(serialize(output)) 
+            json_ = json.dumps(serialize(data)) 
         await quart.websocket.send(json_)
 
     def add_url(self, url, callback):
         self.url_map[url] = callback
 
-    async def send(self, id_, data, client=None):
+    async def send(self, id_, data, client=None, x_client=None):
         message = {'id': id_, 'data': data}
 
         # send by putting in event loop
         # Oddly, push_nowait doesn't get serviced right away, so we use asyncio.run_coroutine_threadsafe
         if client is None: # send to all clients
             for client in self.clients:
-                await client.put(message)
+                if client is not x_client:
+                    await client.send_queue.put(message)
         else:
-            await client.put(message)
+            await client.send_queue.put(message)
         

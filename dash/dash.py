@@ -119,6 +119,7 @@ class Services(object):
     SERIALIZED_CALLBACKS = 1<<5
 
     # callback services
+    S0 = 0 # NORMAL
     S1 = PUSHER_UPDATE + NO_CLIENT_INITIAL_CALLBACK + SHARED_CALLBACK + \
         SERVER_INITIAL_CALLBACK + SERIALIZED_CALLBACKS
     S2 = PUSHER_UPDATE + SERIALIZED_CALLBACKS
@@ -131,6 +132,8 @@ class Services(object):
 
     @staticmethod
     def shared_test(service):
+        if service is None:
+            return False
         return service&Services.SHARED_CALLBACK
 
 
@@ -291,7 +294,7 @@ class Dash(object):
         show_undo_redo=False,
         plugins=None,
         server_service=Services.NORMAL, 
-        callback_service=Services.NORMAL,
+        callback_service=Services.S0,
         **obsolete
     ):
         _validate.check_obsolete(obsolete)
@@ -429,13 +432,9 @@ class Dash(object):
         return None
 
     def list_to_mods(self, list_):
-        mods = {}
+        mods = collections.defaultdict(dict)
         for i in list_:
-            id_ = i['id']
-            if id_ in mods: 
-                mods[id_][i['property']] = i['value']
-            else:
-                mods[id_] = {i['property']: i['value']}
+            mods[i['id']][i['property']] = i['value']
         return mods
 
     def mods_to_list(self, mods):
@@ -461,34 +460,28 @@ class Dash(object):
                         # setattr won't raise an exception here, so we will.
                         raise AttributeError('object {} has no attribute {}.'.format(f, attr))
 
-        
     async def push_mods_coro(self, mods, client=None):
         if isinstance(mods, list):
             props = mods
             mods = self.list_to_mods(props)
         else:
             props = self.mods_to_list(mods)
+
         # If we modify all clients, we should modify layout.
         if client is None: 
             self.mod_layout(mods)
 
-        tasks = []
-        output_list = self.callback_intersect(props, lambda service : True)
-        if output_list:
-            for output in output_list:
-                service = self.callback_map[output]['service']
-                if Services.shared_test(service):
-                    if client is not None:
-                        raise ('Can only call push_mods() on shared callback for all clients.')
-                    tasks.append(asyncio.create_task(self.callback_chain(props)))
-                else:
-                    tasks.append(asyncio.create_task(self.pusher.send('mod_n', mods, client)))
-            for task in tasks:
-                await task
-        else:
-            await self.pusher.send('mod', mods, client)
+        dispatched = None
+        try:
+            dispatched = await self.dispatch_chain(props)
+        except Exception:
+            pass
 
-
+        if not dispatched:
+            # If component isn't shared we modify with notification.  
+            # If component doesn't have any callbacks we also modify with notification
+            # (and subsequently don't get called back.)
+            await self.pusher.send('mod_n', mods, client) 
 
     # Note, client==None means all clients.
     def push_mods(self, mods, client=None):
@@ -535,28 +528,22 @@ class Dash(object):
         # add a handler for components suites errors to return 404
         self.server.errorhandler(InvalidResourceError)(self._invalid_resources_handler)
 
+        pusher_other = self.config.server_service&Services.PUSHER_OTHER
         self._add_url(
             "_dash-component-suites/<string:package_name>/<path:fingerprinted_path>",
             self.serve_component_suites,
         )
-        self._add_url("_dash-layout", self.serve_layout, 
-            socket_callback=lambda data : self.serve_layout(True) 
-                if self.config.server_service&Services.PUSHER_OTHER else None)
-        self._add_url("_dash-dependencies", self.dependencies, 
-            socket_callback=lambda data : self.dependencies(True)
-                if self.config.server_service&Services.PUSHER_OTHER else None)
-        self._add_url("_dash-update-component", self.dispatch, ["POST"], 
-            socket_callback=self.socket_dispatch)
-        self._add_url("_reload-hash", self.serve_reload_hash, 
-            socket_callback=lambda data : self.serve_reload_hash(True)
-                if self.config.server_service&Services.PUSHER_OTHER else None)
+        self._add_url("_dash-layout", self.serve_layout, pusher_callback=pusher_other)
+        self._add_url("_dash-dependencies", self.dependencies, pusher_callback=pusher_other)
+        self._add_url("_dash-update-component", self.dispatch, ["POST"], True)
+        self._add_url("_reload-hash", self.serve_reload_hash, pusher_callback=pusher_other) 
         self._add_url("_favicon.ico", self._serve_default_favicon)
         self._add_url("", self.index)
 
         # catch-all for front-end routes, used by dcc.Location
         self._add_url("<path:path>", self.index)
 
-    def _add_url(self, name, view_func, methods=("GET",), socket_callback=None):
+    def _add_url(self, name, view_func, methods=("GET",), pusher_callback=False):
         full_name = self.config.routes_pathname_prefix + name
 
         self.server.add_url_rule(
@@ -567,8 +554,8 @@ class Dash(object):
         # e.g. for adding authentication with flask_login
         self.routes.append(full_name)
 
-        if socket_callback is not None:
-            self.pusher.add_url(name, socket_callback)
+        if pusher_callback:
+            self.pusher.add_url(name, view_func)
 
     @property
     def layout(self):
@@ -597,11 +584,11 @@ class Dash(object):
         _validate.validate_index("index string", checks, value)
         self._index_string = value
 
-    async def serve_layout(self, socket=False):
+    async def serve_layout(self, body=None, client=None, request_id=None):
         layout = self._layout_value()
 
-        if socket:
-            return layout
+        if request_id is not None:
+            await self.pusher.respond(layout, request_id)
         else:
             # TODO - Set browser cache limit - pass hash into frontend
             return quart.Response(
@@ -628,7 +615,7 @@ class Dash(object):
             }
         return config
 
-    async def serve_reload_hash(self, socket=True):
+    async def serve_reload_hash(self, body=None, client=None, request_id=None):
         _reload = self._hot_reload
         with _reload.lock:
             hard = _reload.hard
@@ -643,8 +630,8 @@ class Dash(object):
             "packages": list(self.registered_paths.keys()),
             "files": list(changed),
         }
-        if socket:
-            return res
+        if request_id is not None:
+            await self.pusher.respond(res, request_id)
         else:
             return quart.jsonify(res)
 
@@ -936,9 +923,9 @@ class Dash(object):
             app_entry=app_entry,
         )
 
-    async def dependencies(self, socket=False):
-        if socket:
-            return self._callback_list
+    async def dependencies(self, body=None, client=None, request_id=None):
+        if request_id is not None:
+            await self.pusher.respond(self._callback_list, request_id)
         else:
             return quart.jsonify(self._callback_list)
 
@@ -1054,6 +1041,9 @@ class Dash(object):
             "function_name": function_name,
         }
 
+    def callback_s0(self, output, inputs, state=()):
+        return self.callback(output, inputs, state, Services.S0)
+
     def callback_s1(self, output, inputs, state=()):
         return self.callback(output, inputs, state, Services.S1)
 
@@ -1069,7 +1059,7 @@ class Dash(object):
 
         def wrap_func(func):
             @wraps(func)
-            async def add_context(body, response, service, lock):
+            async def add_context(body, response, lock, client):
                 g = _Context()  
                 g_cc.set(g)          
                 g.inputs_list = inputs = body.get("inputs", [])
@@ -1084,14 +1074,14 @@ class Dash(object):
                 g.triggered_inputs = [
                     {"prop_id": x, "value": input_values.get(x)} for x in changed_props
                 ]
-                if response is not None:
-                    g.dash_response = response
+                g.dash_response = response # None if pusher request
+                g.client = client # None if http request
 
                 args = inputs_to_vals(inputs) + inputs_to_vals(state)
 
                 # remember args for shared callbacks
                 if Services.shared_test(service):
-                    self.callback_map[output]["args"] = {"inputs": inputs, "state": state}
+                    self.callback_map[output]["args"] = {"inputs": inputs.copy(), "state": state.copy()}
 
                 if lock is not None:
                     lock.acquire()
@@ -1146,42 +1136,47 @@ class Dash(object):
                 lock = asyncio.Lock() if service&Services.SERIALIZED_CALLBACKS else None
             else:
                 lock = threading.Lock() if service&Services.SERIALIZED_CALLBACKS else None 
-            self.callback_map[callback_id]["callback"] = add_context, is_coro, service, lock
+            self.callback_map[callback_id]["callback"] = add_context, is_coro, lock
         
             return add_context
 
         return wrap_func
 
-    # We need this method to deal with PreventUpdate correctly.
-    async def socket_dispatch(self, body):
-        try:
-            res = await self.dispatch(body, True)
-        except PreventUpdate:
-            return None
-        return res
-            
-    async def dispatch(self, body=None, socket=False):
-        if socket:
-            response = None
-        else:
-            body = await quart.request.get_json()
-            response = quart.Response(None, mimetype="application/json")
-
-        func, is_coro, service, lock = self.callback_map[body["output"]]["callback"]
+    async def call_func(self, body, response, client):
+        func, is_coro, lock = self.callback_map[body["output"]]["callback"]
 
         if is_coro:
-            json_output, output = await func(body, response, service, lock)  # %% callback invoked
+            return await func(body, response, lock, client)  # %% callback invoked
         else:
             loop = asyncio.get_event_loop()
             # The callback isn't a coroutine, so we need to run in an executor.
             # Note, there is no easy way to have a wrapper return a coroutine or routine conditionally...
             # So func is always a coroutine and runcoro() allows us to run a coroutine 
             # inside executor thread.  
-            json_output, output = await loop.run_in_executor(None, runcoro, func(body, response, service, lock))  # %% callback invoked 
+            return await loop.run_in_executor(None, runcoro, func(body, response, lock, client))  # %% callback invoked 
 
-        if socket:
-            return output
-        else:    
+    async def dispatch(self, body=None, client=None, request_id=None):
+        if body:        
+            try:
+                json_response, response = await self.call_func(body, None, client)
+            except PreventUpdate:
+                if request_id is not None:
+                    await self.pusher.respond(None, request_id) 
+                return 
+            if request_id is not None:
+                await self.pusher.respond(response, request_id) 
+            # Share changed props and outputs with all clients if it's a shared callback.
+            if Services.shared_test(self.callback_map[body["output"]]["service"]):
+                mods = response['response']
+                for cpi in body['changedPropIds']:
+                    id_, prop = cpi.split('.')
+                    mods[id_][prop] = self.find_prop_value(body['inputs'], id_, prop)
+                await self.pusher.send('mod', mods, x_client=client)
+                await self.dispatch_chain(outputs)
+        else:
+            body = await quart.request.get_json()
+            response = quart.Response(None, mimetype="application/json")
+            json_output, output = await self.call_func(body, response, None)
             response.set_data(json_output)
             return response
 
@@ -1195,8 +1190,14 @@ class Dash(object):
         id1 = [i['id'] + '.' + i['property'] for i in list1]
         return list(set(id0).intersection(id1))
 
-    # return a list of callbacks (output ids)
-    def callback_test(self, props, service_test, test):
+    def find_prop_value(self, props, id_, prop):
+        for i in props:
+            if i['id']==id_ and i['property']==prop:
+                return i['value']
+        return None
+
+    # Return a list of callbacks (output ids).
+    def callback_compare(self, props, service_test, test):
         callbacks = []
         for output, callback in self.callback_map.items():
             if service_test(callback['service']) and test(callback["inputs"]):
@@ -1204,12 +1205,13 @@ class Dash(object):
         return callbacks
 
     def callback_intersect(self, props, service_test):
-        return self.callback_test(props, service_test, lambda i : self.intersect_ids(i, props))
+        return self.callback_compare(props, service_test, lambda i : self.intersect_ids(i, props))
 
     def callback_diff(self, props, service_test):
-        return self.callback_test(props, service_test, lambda i : not self.intersect_ids(i, props))
+        return self.callback_compare(props, service_test, lambda i : not self.intersect_ids(i, props))
 
-    def callback_body(self, output, inputs_test):
+    # This method can only apply to shared callbacks.
+    def callback_body(self, output, inputs):
         # callback body consists of: 
         # {'output': _, 'outputs': [], 'inputs': [], 'changedPropIds': [], 'state': []}
         callback = self.callback_map[output]
@@ -1238,31 +1240,31 @@ class Dash(object):
 
         return body
 
-    # call all callbacks, return results in a list [{'id': _, 'property': _, 'value': _}, ...] 
+    # This method can only apply to shared callbacks.
+    # Call all callbacks, return results in a list [{'id': _, 'property': _, 'value': _}, ...]. 
     async def dispatch_callbacks(self, bodies):
         tasks = []
+        # If there are multiple callbacks, run in parallel.
         for body in bodies:
-            tasks.append(asyncio.create_task(self.dispatch(body, True)))
+            if quart.has_websocket_context():
+                task = asyncio.create_task(quart.copy_current_websocket_context(self.dispatch)(body))
+            else:
+                task = asyncio.create_task(self.dispatch(body))
+            tasks.append(task)
 
-        outputs = []
         for task in tasks:
             result = await task
-            outputs = self.mods_to_list(result['response'])
-        return outputs
 
-    async def callback_chain(self, props, service_test=Services.shared_test):
-        while True:
-            output_list = self.callback_intersect(props, service_test)
-            if not output_list:
-                break
-            bodies = [callback_body(output, props) for output in output_list]
-            outputs = await dispatch_callbacks(bodies)
-            mods = self.list_to_mods(props+outputs)
-            await self.pusher.send('mod', mods) 
-            props = outputs
-
-    async def handle_mods(self, mods):
-        pass
+    # This method can only apply to shared callbacks.
+    async def dispatch_chain(self, props):
+        bodies = []
+        output_list = self.callback_intersect(props, Services.shared_test)
+        for output in output_list:
+            if not Services.shared_test(self.callback_map[output]['service']):
+                raise Exception('{} callback is part of shared callback chain, but is not shared.'.format(output))   
+            bodies.append(callback_body(output, props)) 
+        await dispatch_callbacks(bodies)
+        return output_list
 
     async def initial_callbacks(self):
         # Find the outputs of all callbacks that have SERVER_INITIAL_CALLBACK set.
