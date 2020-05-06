@@ -47,7 +47,7 @@ from ._utils import (
     stringify_id,
     strip_relative_path,
 )
-from .pusher import Pusher
+from .pusher import Pusher, Alock
 from . import _validate
 from . import _watch
 
@@ -377,6 +377,7 @@ class Dash(object):
         # Cache of indexed layouts
         self.index_cache = collections.defaultdict(list)
         self.index_cache_size = 5
+        self.index_lock = Alock()
         
         # list of inline scripts
         self._inline_scripts = []
@@ -463,25 +464,31 @@ class Dash(object):
             if hasattr(comp, 'id'):
                 try:
                     comp_ = self.layout_components[comp.id]
-                    comp = comp_  # replace with table version
+                    if comp_.shared:
+                        comp = comp_  # replace with table version
                 except KeyError:
                     # Add to table
                     self.layout_components[comp.id] = comp
+                except AttributeError:
+                    pass
 
         await self.initial_callbacks(comps)
         return comps
 
 
     async def handle_index(self, id_, prop, val):
-        if (id_=='_layout' or prop=='children') and val not in self.index_cache[id_]:
+        async with self.index_lock:
+            if (id_=='_layout' or prop=='children') and val not in self.index_cache[id_]:
                 comps = await self.index_layout(val)
                 if comps:
                     self.index_cache[id_].append(val)
                     if len(self.index_cache[id_]) > self.index_cache_size:
                         self.index_cache[id_].pop(0)
 
-        if id_!='_layout':
-            setattr(self.layout_components[id_], prop, val)
+            if id_!='_layout':
+                comp = self.layout_components[id_]
+                setattr(comp, prop, val)
+                comp.shared = True # mark as shared
 
 
     async def mod_index(self, mods):
@@ -626,9 +633,10 @@ class Dash(object):
 
     async def serve_layout(self, body=None, client=None, request_id=None):
         layout = self._layout_value()
-        await self.handle_index('_layout', '', self._cached_layout)
 
         if request_id is not None:
+            # We are assuming here that shared callbacks only work with PUSHER_OTHER enabled.
+            await self.handle_index('_layout', '', self._cached_layout)
             await self.pusher.respond(layout, request_id)
         else:
             # TODO - Set browser cache limit - pass hash into frontend
@@ -1385,7 +1393,7 @@ class Dash(object):
                 outputs.extend(self.callback_map[output]['outputs'])
 
             # Find all callbacks that don't have any outputs as inputs (and meet service_test).
-            # These are the callbacks at the top of any callback chains.  We will call them first.
+            # These are the callbacks at the top of any callback chains.  We will call them first/next.
             output_list, x_list = self.callback_diff(outputs, service_test)
             bodies = [self.callback_body(output, []) for output in output_list]
             await self.dispatch_callbacks(bodies)

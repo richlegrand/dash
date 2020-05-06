@@ -1,6 +1,7 @@
 import asyncio
 import json
 import quart
+from contextvars import ContextVar
 import time
 
 def serialize(obj):
@@ -19,6 +20,40 @@ def serialize(obj):
     return obj
 
 
+context_rcount = ContextVar('context_rcount')
+
+# This class defers the creation of the asyncio Lock until it's needed,
+# to prevent issues with creating the lock before the event loop is running.
+# It also handles recurrence/recursion. 
+class Alock:
+    def __init__(self):
+        self.lock = None
+
+    async def __aenter__(self):
+        if self.lock is None:
+            self.lock = asyncio.Lock()
+        try: 
+            rcount = context_rcount.get()
+        except LookupError:    
+            # This is the first acquisition in this context, so get lock.  
+            await self.lock.acquire()
+            context_rcount.set(1)
+            return self.lock
+        if rcount==0:
+            # We've locked and unlocked within this context already. We need to reacquire lock.
+            await self.lock.acquire()
+
+        context_rcount.set(rcount + 1)
+        return self.lock
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        rcount = context_rcount.get() - 1
+        context_rcount.set(rcount)
+        if rcount == 0:
+            self.lock.release()
+
+
+
 class Client(object):
     def __init__(self):
         self.send_queue = asyncio.Queue()
@@ -27,6 +62,11 @@ class Client(object):
         self.host = quart.websocket.host
         self.authentication = None
 
+
+def exception_handler(loop, context):
+    print('Ouch!!!\n  Coroutine exception:', context)
+
+
 class Pusher(object):
 
     def __init__(self, server):
@@ -34,6 +74,7 @@ class Pusher(object):
         self.clients = []
         self.loop = None
         self.url_map = {}
+        self.lock = None
 
         # websocket connection handler 
         @self.server.websocket('/_push')
@@ -41,6 +82,7 @@ class Pusher(object):
             print('**** spawning')
             if self.loop is None:
                 self.loop = asyncio.get_event_loop()
+                self.loop.set_exception_handler(exception_handler)
             client = Client()
             self.clients.append(client)
             socket_sender = asyncio.create_task(quart.copy_current_websocket_context(self.socket_sender)(client))
