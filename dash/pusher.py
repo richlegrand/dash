@@ -5,26 +5,29 @@ import time
 
 def serialize(obj):
     if hasattr(obj, 'to_plotly_json'):
-        res = serialize(obj.to_plotly_json())
-    elif isinstance(obj, dict):
+        return serialize(obj.to_plotly_json())
+    if isinstance(obj, dict):
         res = {}
         for key in obj:
             res[key] = serialize(obj[key])
-    elif isinstance(obj, list) or isinstance(obj, tuple):
+        return res
+    if isinstance(obj, list) or isinstance(obj, tuple):
         res = []
         for i in obj:
             res.append(serialize(i))
-    else:
-        return obj
-    return res
+        return res
+    return obj
 
 
-class Client:
+class Client(object):
     def __init__(self):
         self.send_queue = asyncio.Queue()
         self.connect_time = time.time()
+        self.address = quart.websocket.remote_addr
+        self.host = quart.websocket.host
+        self.authentication = None
 
-class Pusher:
+class Pusher(object):
 
     def __init__(self, server):
         self.server = server

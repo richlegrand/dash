@@ -21,6 +21,7 @@ import asyncio
 import inspect
 from werkzeug.debug.tbtools import get_current_traceback
 from contextvars import ContextVar
+from copy import deepcopy
 
 import plotly
 import dash_renderer
@@ -370,7 +371,13 @@ class Dash(object):
         self.callback_map = {}
         # same deps as a list to catch duplicate outputs, and to send to the front end
         self._callback_list = []
-
+        self.shared_callbacks_called = False
+        # Table of shared components, indexed by id
+        self.layout_components = {}
+        # Cache of indexed layouts
+        self.index_cache = collections.defaultdict(list)
+        self.index_cache_size = 5
+        
         # list of inline scripts
         self._inline_scripts = []
 
@@ -415,26 +422,13 @@ class Dash(object):
         if self.server is not None:
             self.init_app()
 
-    # find component within layout, given id
-    def find_component(self, obj, id):
-        if hasattr(obj, 'id'):
-            if obj.id==id:
-                return obj
-        if hasattr(obj, 'children'):
-            if isinstance(obj.children, list) or isinstance(obj.children, tuple):
-                for c in obj.children:
-                    res = self.find_component(c, id)
-                    if res is not None:
-                        return res
-            else:
-                return self.find_component(obj.children, id)
-        return None
 
     def list_to_mods(self, list_):
         mods = collections.defaultdict(dict)
         for i in list_:
             mods[i['id']][i['property']] = i['value']
         return mods
+
 
     def mods_to_list(self, mods):
         list_ = []
@@ -443,21 +437,65 @@ class Dash(object):
                 list_.append({'id': id_, 'property': prop, 'value': val})
         return list_
 
-    # Modify layout given "mods", which are dicts of dicts. 
-    def mod_layout(self, mods):
-        if isinstance(self._layout, patch_collections_abc("Callable")):
-            raise Exception('Cannot use push_mods or shared callbacks if layout is a function.')
+
+    def flatten_layout(self, layout):
+        if hasattr(layout, 'children'):
+            if hasattr(layout, 'id'):
+                return [layout] + self.flatten_layout(layout.children)
+            else:
+                return self.flatten_layout(layout.children)
+        if isinstance(layout, list) or isinstance(layout, tuple):
+            res = []
+            for i in layout:
+                res.extend(self.flatten_layout(i))
+            return res
+        if hasattr(layout, 'id'):
+            return [layout]
+        return []
+
+
+    async def index_layout(self, layout):
+        # dicts aren't valid layouts
+        if isinstance(layout, dict):
+            return
+        comps = self.flatten_layout(layout)
+        for comp in comps:
+            if hasattr(comp, 'id'):
+                try:
+                    comp_ = self.layout_components[comp.id]
+                    comp = comp_  # replace with table version
+                except KeyError:
+                    # Add to table
+                    self.layout_components[comp.id] = comp
+
+        await self.initial_callbacks(comps)
+        return comps
+
+
+    async def handle_index(self, id_, prop, val):
+        if (id_=='_layout' or prop=='children') and val not in self.index_cache[id_]:
+                comps = await self.index_layout(val)
+                if comps:
+                    self.index_cache[id_].append(val)
+                    if len(self.index_cache[id_]) > self.index_cache_size:
+                        self.index_cache[id_].pop(0)
+
+        if id_!='_layout':
+            setattr(self.layout_components[id_], prop, val)
+
+
+    async def mod_index(self, mods):
         if isinstance(mods, list):
             mods = list_to_mods(mods)
         for id_, vals in mods.items():
-            comp = self.find_component(self._layout, id_)
-            if comp is not None:
-                for prop, val in vals.items():
-                    if hasattr(comp, prop):
-                        setattr(comp, prop, val)
-                    else: 
-                        # setattr won't raise an exception here, so we will.
-                        raise AttributeError('object {} has no attribute {}.'.format(f, attr))
+            for prop, val in vals.items():
+                await self.handle_index(id_, prop, val)
+
+
+    async def share_shared_mods(self, mods, x_client=None):
+        await self.pusher.send('mod', mods, x_client=x_client) 
+        await self.mod_index(mods)
+
 
     async def push_mods_coro(self, mods, client=None):
         if isinstance(mods, list):
@@ -473,13 +511,12 @@ class Dash(object):
             raise Exception('Must send push_mods() on components with shared callbacks to all clients.')
         if output_list:
             # We need to send input mods first before calling dispatch_chain
-            await self.pusher.send('mod', mods) 
-        dispatched, x_list = await self.dispatch_chain(props)
-
-        if not dispatched:
+            await self.share_shared_mods(mods)
+            await self.dispatch_chain(props)
+        else:
             # If we modify all clients, we should modify layout.
             if client is None: 
-                self.mod_layout(mods)
+                await self.mod_index(mods)
             # If component isn't shared we modify with notification.  
             # If component doesn't have any callbacks we also modify with notification
             # (and subsequently don't get called back, which is correct behavior.)
@@ -568,6 +605,7 @@ class Dash(object):
             self._cached_layout = self._layout()
         else:
             self._cached_layout = self._layout
+        # Index the layout
         return self._cached_layout
 
     @layout.setter
@@ -588,6 +626,7 @@ class Dash(object):
 
     async def serve_layout(self, body=None, client=None, request_id=None):
         layout = self._layout_value()
+        await self.handle_index('_layout', '', self._cached_layout)
 
         if request_id is not None:
             await self.pusher.respond(layout, request_id)
@@ -944,7 +983,7 @@ class Dash(object):
         self.callback_map[callback_id] = {
             "inputs": callback_spec["inputs"],
             "state": callback_spec["state"],
-            "outputs": [c.to_dict() for c in output] if isinstance(output, list) else output.to_dict(),
+            "outputs": [c.to_dict() for c in output] if isinstance(output, list) else [output.to_dict()],
             "service": service,
         }
         self._callback_list.append(callback_spec)
@@ -1083,7 +1122,7 @@ class Dash(object):
 
                 # remember args for shared callbacks
                 if Services.shared_test(service):
-                    self.callback_map[output]["args"] = {"inputs": inputs.copy(), "state": state.copy()}
+                    self.callback_map[output]["args"] = {"inputs": deepcopy(inputs), "state": deepcopy(state)}
 
                 if lock is not None:
                     lock.acquire()
@@ -1144,7 +1183,7 @@ class Dash(object):
 
         return wrap_func
 
-    async def call_func(self, body, response, client):
+    async def call_callback(self, body, response, client):
         func, is_coro, lock = self.callback_map[body["output"]]["callback"]
 
         if is_coro:
@@ -1159,42 +1198,50 @@ class Dash(object):
 
     async def dispatch(self, body=None, client=None, request_id=None):
         if body:        
+            shared = Services.shared_test(self.callback_map[body["output"]]["service"])
+            # Client will only be set on first callback in chain.  We only want to 
+            # send changed props for first dispatch in chain.
+            # Share input changes with other clients, but not originating client.
+            # Note, we could wait and merge input_mods with output_mods and send in 
+            # one combined message, but this gets the changes sent without the latency
+            # of the callback. 
+            if client and shared: 
+                input_mods = collections.defaultdict(dict)
+                for cpi in body['changedPropIds']:
+                    id_, prop = cpi.split('.')
+                    input_mods[id_][prop] = self.find_prop_value(body['inputs'], id_, prop)
+                    print('send input mods', input_mods, client)
+                    await self.share_shared_mods(input_mods, client)
+
+            # Call callback.
             try:
-                json_response, response = await self.call_func(body, None, client)
+                json_response, response = await self.call_callback(body, None, client)
             except PreventUpdate:
                 if request_id is not None:
-                    await self.pusher.respond(None, request_id) 
-                return 
-            shared = Services.shared_test(self.callback_map[body["output"]]["service"])
+                    await self.pusher.respond({}, request_id) # send empty response
+                return
+
+            # Handle response if this is a request.
             if request_id is not None:
                 if shared:
-                    # Prevent notifications caused by update at client
-                    await self.pusher.respond(None, request_id)
+                    # Prevent notifications caused by update/setProps at client
+                    await self.pusher.respond({}, request_id)
                 else:
                     await self.pusher.respond(response, request_id) 
+
             # Share changed props and outputs with all clients if it's a shared callback.
             if shared:
                 output_mods = response['response']
                 outputs = self.mods_to_list(output_mods)
-                if client: # client will only be set on first callback in chain.
-                    # Share input changes with other clients, but not originating client
-                    input_mods = collections.defaultdict(dict)
-                    for cpi in body['changedPropIds']:
-                        id_, prop = cpi.split('.')
-                        input_mods[id_][prop] = self.find_prop_value(body['inputs'], id_, prop)
-                        print('send input mods', input_mods, client)
-                        await self.pusher.send('mod', input_mods, x_client=client)
-                        self.mod_layout(input_mods)
                 print('send output mods', output_mods)
-                await self.pusher.send('mod', output_mods)
-                self.mod_layout(output_mods)
+                await self.share_shared_mods(output_mods)
                 output_list, x_list = await self.dispatch_chain(outputs)
                 if x_list:
                     raise Exception('{} callback(s) are part of shared callback chain, but are not shared.'.format(x_list))   
         else:
             body = await quart.request.get_json()
             response = quart.Response(None, mimetype="application/json")
-            json_output, output = await self.call_func(body, response, None)
+            json_output, output = await self.call_callback(body, response, None)
             response.set_data(json_output)
             return response
 
@@ -1203,10 +1250,6 @@ class Dash(object):
         id1 = [i['id'] for i in list1]
         return list(set(id0).intersection(id1))
 
-    def intersect_ids_props(self, list0, list1):
-        id0 = [i['id'] + '.' + i['property'] for i in list0]
-        id1 = [i['id'] + '.' + i['property'] for i in list1]
-        return list(set(id0).intersection(id1))
 
     def find_prop_value(self, props, id_, prop):
         for i in props:
@@ -1214,11 +1257,29 @@ class Dash(object):
                 return i['value']
         return None
 
+
+    def valid_callbacks(self, service_test):
+        valid = []
+        for output, callback in self.callback_map.items():
+            try:
+                if not service_test(callback['service']):
+                    raise Exception
+                for i in callback['inputs'] + callback['outputs']:  
+                    if i['id'] not in self.layout_components:
+                        raise Exception
+                valid.append(output)
+            except Exception:
+                pass
+        return valid
+
+
     # Return a list of callbacks (output ids).
     def callback_compare(self, props, service_test, test):
         callbacks = []
         x_callbacks = []
-        for output, callback in self.callback_map.items():
+        valid_list = self.valid_callbacks(service_test)
+        for output in valid_list:
+            callback = self.callback_map[output]
             if test(callback["inputs"]):
                 if service_test(callback['service']):
                     callbacks.append(output)
@@ -1238,15 +1299,15 @@ class Dash(object):
         # {'output': _, 'outputs': [], 'inputs': [], 'changedPropIds': [], 'state': []}
         callback = self.callback_map[output]
         if 'args' in callback:
-            body = callback['args'].copy()
+            body = deepcopy(callback['args'])
         else: # construct from layout
-            inputs_ = callback['inputs'].copy()
+            inputs_ = deepcopy(callback['inputs'])
             for i in inputs_:
-                comp = self.find_component(self._layout, i['id'])
+                comp = self.layout_components[i['id']]
                 i['value'] = getattr(comp, i['property'], None)
-            state = callback['state'].copy()    
+            state = deepcopy(callback['state'])    
             for s in state:
-                comp = self.find_component(self._layout, s['id'])
+                comp = self.layout_components[s['id']]
                 s['value'] = getattr(comp, s['property'], None)
             body = {'inputs': inputs_, 'state': state}
         # add inputs
@@ -1258,7 +1319,9 @@ class Dash(object):
                     changedPropIds.append(i['id'] + '.' + i['property'])
         body['changedPropIds'] = changedPropIds
         body['output'] = output
-        body['outputs'] = callback['outputs'].copy()
+        body['outputs'] = callback['outputs'][0].copy() if len(callback['outputs'])==1 else deepcopy(callback['outputs']) 
+        if len(body['outputs'])==1:
+            body['outputs'] = body['outputs']
         print('**** body', body)
         return body
 
@@ -1277,6 +1340,7 @@ class Dash(object):
         for task in tasks:
             result = await task
 
+
     # This method can only apply to shared callbacks.
     async def dispatch_chain(self, props):
         bodies = []
@@ -1286,45 +1350,52 @@ class Dash(object):
         await self.dispatch_callbacks(bodies)
         return output_list, x_list
 
-    async def initial_callbacks(self):
-        # Find the outputs of all callbacks that have SERVER_INITIAL_CALLBACK set.
-        outputs = []
-        all_output_list = []
+
+    async def initial_callbacks(self, comps):
+        # If all shared callbacks have been called, exit.
+        if self.shared_callbacks_called:
+            return
         service_bits = Services.SERVER_INITIAL_CALLBACK + Services.SHARED_CALLBACK
         service_test = lambda service : (service&(service_bits))==service_bits
-        for output, callback in self.callback_map.items():
-            if service_test(callback['service']):
-                outputs.extend(callback['outputs'])
-                all_output_list.append(output)
+        # Find all shared callbacks that haven't been called
+        output_list = []
+        valid_list = self.valid_callbacks(service_test)
+        for output in valid_list:
+            callback = self.callback_map[output]
+            if service_test(callback['service']) and 'args' not in callback:
+                output_list.append(output)
+        # If list is empty, we're done.
+        if not output_list:
+            self.shared_callbacks_called = True
+            return
 
-        # Find all callbacks that don't have any outputs as inputs (and meet service_test).
-        # These are the callbacks at the top of any callback chains.  We will call them first...
-        output_list = self.callback_diff(outputs, service_test)
-        bodies = [self.callback_body(output, []) for output in output_list]
-        outputs = await dispatch_callbacks(bodies)
-        self.mod_layout(outputs)
-        # Add outputs from this level in case any PreventUpdates were raised.
-        for output in output_list:
-            for i in self.callback_map[output]['outputs']:
-                if not self.intersect_ids_props([i], outputs):
-                    outputs.append(i)
-
-        # Loop through callback chains level-by-level...
-        while True:
-            output_list, x_list = self.callback_intersect(outputs, service_test)
-            if not output_list:
-                break
-            bodies = [self.callback_body(output, outputs) for output in output_list]
-            outputs = await dispatch_callbacks(bodies)
-            self.mod_layout(outputs)
-            # Add outputs from this level in case any PreventUpdates are raised.
+        # If any inputs of our callbacks are incident with comps, these are the callbacks 
+        # we will call
+        all_output_list = set()
+        for c in comps:
             for output in output_list:
-                for i in self.callback_map[output]['outputs']:
-                    if not self.intersect_ids_props([i], outputs):
-                        outputs.append(i)
-        # Final check
-        for output in all_output_list:
-            assert 'args' in self.callback_map[output], '{} callback was not called!'.format(output)
+                for i in self.callback_map[output]['inputs']:
+                    if c.id==i['id']:
+                        all_output_list.add(output)
+
+        while all_output_list:
+            # Assemble a list of all outputs from all_output_list
+            outputs = []
+            for output in all_output_list:
+                outputs.extend(self.callback_map[output]['outputs'])
+
+            # Find all callbacks that don't have any outputs as inputs (and meet service_test).
+            # These are the callbacks at the top of any callback chains.  We will call them first.
+            output_list, x_list = self.callback_diff(outputs, service_test)
+            bodies = [self.callback_body(output, []) for output in output_list]
+            await self.dispatch_callbacks(bodies)
+
+            # Final check -- if some of the callbacks haven't been called 
+            # because of PreventUpdate, etc., continue with remaining callbacks
+            discards = [output for output in all_output_list if 'args' in self.callback_map[output]]
+            for discard in discards:
+                all_output_list.discard(discard)
+
 
     def _setup_server(self):
         # Apply _force_eager_loading overrides from modules
