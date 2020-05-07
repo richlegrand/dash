@@ -3,7 +3,7 @@ import json
 import quart
 from contextvars import ContextVar
 import time
-from pprint import pprint
+import sys
 
 def serialize(obj):
     if hasattr(obj, 'to_plotly_json'):
@@ -69,9 +69,8 @@ class Client(object):
 
 
 def exception_handler(loop, context):
-    print('Ouch!!!\n  Coroutine exception:')
-    pprint(context)
-
+    task = context['future']
+    task.print_stack()
 
 class Pusher(object):
 
