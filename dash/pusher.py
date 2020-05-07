@@ -3,6 +3,7 @@ import json
 import quart
 from contextvars import ContextVar
 import time
+from pprint import pprint
 
 def serialize(obj):
     if hasattr(obj, 'to_plotly_json'):
@@ -49,9 +50,13 @@ class Alock:
     async def __aexit__(self, exc_type, exc_value, traceback):
         rcount = context_rcount.get() - 1
         context_rcount.set(rcount)
-        if rcount == 0:
+        if rcount==0:
             self.lock.release()
 
+    def locked(self):
+        if self.lock is None:
+            return False
+        return self.lock.locked()
 
 
 class Client(object):
@@ -64,7 +69,8 @@ class Client(object):
 
 
 def exception_handler(loop, context):
-    print('Ouch!!!\n  Coroutine exception:', context)
+    print('Ouch!!!\n  Coroutine exception:')
+    pprint(context)
 
 
 class Pusher(object):
@@ -100,7 +106,7 @@ class Pusher(object):
             while True:
                 data = await quart.websocket.receive()
                 data = json.loads(data);
-                # Create new task so we can handle more messages, keep things snappy.
+                # Create new task so we can handle more messages and keep things snappy.
                 asyncio.create_task(quart.copy_current_websocket_context(self.dispatch)(data, client))
         except asyncio.CancelledError:
             raise

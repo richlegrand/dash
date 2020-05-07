@@ -372,11 +372,9 @@ class Dash(object):
         # same deps as a list to catch duplicate outputs, and to send to the front end
         self._callback_list = []
         self.shared_callbacks_called = False
-        # Table of shared components, indexed by id
+        # Table of components, indexed by id
         self.layout_components = {}
-        # Cache of indexed layouts
-        self.index_cache = collections.defaultdict(list)
-        self.index_cache_size = 5
+        self.shared_mods = collections.defaultdict(dict)
         self.index_lock = Alock()
         
         # list of inline scripts
@@ -445,7 +443,7 @@ class Dash(object):
                 return [layout] + self.flatten_layout(layout.children)
             else:
                 return self.flatten_layout(layout.children)
-        if isinstance(layout, list) or isinstance(layout, tuple):
+        if isinstance(layout, (list, tuple)):
             res = []
             for i in layout:
                 res.extend(self.flatten_layout(i))
@@ -454,41 +452,37 @@ class Dash(object):
             return [layout]
         return []
 
+    def initial_shared_callbacks_called(self):
+        if self.shared_callbacks_called:
+            return True
+        service_bits = Services.SERVER_INITIAL_CALLBACK + Services.SHARED_CALLBACK
+        for callback_id, callback in self.callback_map.items():
+            if (callback['service']&service_bits)==service_bits and 'args' not in callback:
+                return False
+        self.shared_callbacks_called = True
+        return True
 
-    async def index_layout(self, layout):
-        # dicts aren't valid layouts
-        if isinstance(layout, dict):
-            return
-        comps = self.flatten_layout(layout)
-        for comp in comps:
-            if hasattr(comp, 'id'):
-                try:
-                    comp_ = self.layout_components[comp.id]
-                    if comp_.shared:
-                        comp = comp_  # replace with table version
-                except KeyError:
-                    # Add to table
-                    self.layout_components[comp.id] = comp
-                except AttributeError:
-                    pass
-
-        await self.initial_callbacks(comps)
-        return comps
-
-
-    async def handle_index(self, id_, prop, val):
+    async def handle_layout(self, id_, prop, val):
         async with self.index_lock:
-            if (id_=='_layout' or prop=='children') and val not in self.index_cache[id_]:
-                comps = await self.index_layout(val)
-                if comps:
-                    self.index_cache[id_].append(val)
-                    if len(self.index_cache[id_]) > self.index_cache_size:
-                        self.index_cache[id_].pop(0)
+            if id_ is None or prop=='children':
+                comps = self.flatten_layout(val)
+                if not self.initial_shared_callbacks_called():
+                    for comp in comps:
+                        try:
+                            self.layout_components[comp.id]
+                        except KeyError:
+                            self.layout_components[comp.id] = comp
+                    await self.initial_callbacks(comps)
+                for comp in comps:
+                    try:
+                        vals = self.shared_mods[comp.id]
+                        for prop, val in vals.items():
+                            setattr(comp, prop, val)
+                    except KeyError:
+                        pass
 
-            if id_!='_layout':
-                comp = self.layout_components[id_]
-                setattr(comp, prop, val)
-                comp.shared = True # mark as shared
+            if id_ and prop:
+                vals = self.shared_mods[id_][prop] = val
 
 
     async def mod_index(self, mods):
@@ -496,11 +490,15 @@ class Dash(object):
             mods = list_to_mods(mods)
         for id_, vals in mods.items():
             for prop, val in vals.items():
-                await self.handle_index(id_, prop, val)
+                await self.handle_layout(id_, prop, val)
 
 
     async def share_shared_mods(self, mods, x_client=None):
-        await self.pusher.send('mod', mods, x_client=x_client) 
+        # Don't send updates during initial callbacks
+        if not self.index_lock.locked():
+            await self.pusher.send('mod', mods, x_client=x_client)
+        else:
+            print('*********** skipped') 
         await self.mod_index(mods)
 
 
@@ -636,7 +634,7 @@ class Dash(object):
 
         if request_id is not None:
             # We are assuming here that shared callbacks only work with PUSHER_OTHER enabled.
-            await self.handle_index('_layout', '', self._cached_layout)
+            await self.handle_layout(None, None, self._cached_layout)
             await self.pusher.respond(layout, request_id)
         else:
             # TODO - Set browser cache limit - pass hash into frontend
@@ -1282,11 +1280,12 @@ class Dash(object):
 
 
     # Return a list of callbacks (output ids).
-    def callback_compare(self, props, service_test, test):
+    def callback_compare(self, props, service_test, test, output_list):
         callbacks = []
         x_callbacks = []
-        valid_list = self.valid_callbacks(service_test)
-        for output in valid_list:
+        if output_list is None:
+            output_list = self.valid_callbacks(service_test)
+        for output in output_list:
             callback = self.callback_map[output]
             if test(callback["inputs"]):
                 if service_test(callback['service']):
@@ -1295,11 +1294,13 @@ class Dash(object):
                     x_callbacks.append(output)
         return callbacks, x_callbacks
 
-    def callback_intersect(self, props, service_test):
-        return self.callback_compare(props, service_test, lambda i : self.intersect_ids(i, props))
+    def callback_intersect(self, props, service_test, output_list=None):
+        return self.callback_compare(props, service_test, 
+            lambda i : self.intersect_ids(i, props), output_list)
 
-    def callback_diff(self, props, service_test):
-        return self.callback_compare(props, service_test, lambda i : not self.intersect_ids(i, props))
+    def callback_diff(self, props, service_test, output_list=None):
+        return self.callback_compare(props, service_test, 
+            lambda i : not self.intersect_ids(i, props), output_list)
 
     # This method can only apply to shared callbacks.
     def callback_body(self, output, inputs):
@@ -1364,7 +1365,7 @@ class Dash(object):
         if self.shared_callbacks_called:
             return
         service_bits = Services.SERVER_INITIAL_CALLBACK + Services.SHARED_CALLBACK
-        service_test = lambda service : (service&(service_bits))==service_bits
+        service_test = lambda service : (service&service_bits)==service_bits
         # Find all shared callbacks that haven't been called
         output_list = []
         valid_list = self.valid_callbacks(service_test)
@@ -1387,6 +1388,7 @@ class Dash(object):
                         all_output_list.add(output)
 
         while all_output_list:
+            print('all_output_list start', all_output_list)
             # Assemble a list of all outputs from all_output_list
             outputs = []
             for output in all_output_list:
@@ -1394,7 +1396,7 @@ class Dash(object):
 
             # Find all callbacks that don't have any outputs as inputs (and meet service_test).
             # These are the callbacks at the top of any callback chains.  We will call them first/next.
-            output_list, x_list = self.callback_diff(outputs, service_test)
+            output_list, x_list = self.callback_diff(outputs, service_test, all_output_list)
             bodies = [self.callback_body(output, []) for output in output_list]
             await self.dispatch_callbacks(bodies)
 
@@ -1403,6 +1405,7 @@ class Dash(object):
             discards = [output for output in all_output_list if 'args' in self.callback_map[output]]
             for discard in discards:
                 all_output_list.discard(discard)
+            print('all_output_list end', all_output_list)
 
 
     def _setup_server(self):
