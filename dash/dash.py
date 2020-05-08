@@ -374,9 +374,9 @@ class Dash(object):
         self.shared_callbacks_called = False
         # Table of components, indexed by id
         self.layout_components = {}
-        self.shared_mods = collections.defaultdict(dict)
-        self.index_lock = Alock()
-        
+        self.handle_layout_lock = Alock()
+        self.serve_layout_lock = Alock()
+
         # list of inline scripts
         self._inline_scripts = []
 
@@ -452,40 +452,24 @@ class Dash(object):
             return [layout]
         return []
 
-    def initial_shared_callbacks_called(self):
-        if self.shared_callbacks_called:
-            return True
-        service_bits = Services.SERVER_INITIAL_CALLBACK + Services.SHARED_CALLBACK
-        for callback_id, callback in self.callback_map.items():
-            if (callback['service']&service_bits)==service_bits and 'args' not in callback:
-                return False
-        self.shared_callbacks_called = True
-        return True
-
+    
     async def handle_layout(self, id_, prop, val):
-        async with self.index_lock:
+        async with self.handle_layout_lock:
             if id_ is None or prop=='children':
                 comps = self.flatten_layout(val)
-                if not self.initial_shared_callbacks_called():
-                    for comp in comps:
-                        try:
-                            self.layout_components[comp.id]
-                        except KeyError:
-                            self.layout_components[comp.id] = comp
-                    await self.initial_callbacks(comps)
                 for comp in comps:
                     try:
-                        vals = self.shared_mods[comp.id]
-                        for prop, val in vals.items():
-                            setattr(comp, prop, val)
+                        self.layout_components[comp.id]
                     except KeyError:
-                        pass
+                        self.layout_components[comp.id] = comp
+                await self.initial_callbacks(comps)
 
             if id_ and prop:
-                vals = self.shared_mods[id_][prop] = val
+                comp = self.layout_components[id_]
+                setattr(comp, prop, val)
 
 
-    async def mod_index(self, mods):
+    async def mod_layout(self, mods):
         if isinstance(mods, list):
             mods = list_to_mods(mods)
         for id_, vals in mods.items():
@@ -494,12 +478,10 @@ class Dash(object):
 
 
     async def share_shared_mods(self, mods, x_client=None):
-        # Don't send updates during initial callbacks
-        if not self.index_lock.locked():
+        # Don't send updates for this task while gathering layout to serve
+        if not self.serve_layout_lock.locked():
             await self.pusher.send('mod', mods, x_client=x_client)
-        else:
-            print('*********** skipped') 
-        await self.mod_index(mods)
+        await self.mod_layout(mods)
 
 
     async def push_mods_coro(self, mods, client=None):
@@ -521,7 +503,7 @@ class Dash(object):
         else:
             # If we modify all clients, we should modify layout.
             if client is None: 
-                await self.mod_index(mods)
+                await self.mod_layout(mods)
             # If component isn't shared we modify with notification.  
             # If component doesn't have any callbacks we also modify with notification
             # (and subsequently don't get called back, which is correct behavior.)
@@ -634,8 +616,9 @@ class Dash(object):
 
         if request_id is not None:
             # We are assuming here that shared callbacks only work with PUSHER_OTHER enabled.
-            await self.handle_layout(None, None, self._cached_layout)
-            await self.pusher.respond(layout, request_id)
+            async with self.serve_layout_lock:            
+                await self.handle_layout(None, None, self._cached_layout)
+                await self.pusher.respond(layout, request_id)
         else:
             # TODO - Set browser cache limit - pass hash into frontend
             return quart.Response(
@@ -1346,9 +1329,7 @@ class Dash(object):
                 task = asyncio.create_task(self.dispatch(body))
             tasks.append(task)
 
-        for task in tasks:
-            result = await task
-
+        await asyncio.gather(*tasks)
 
     # This method can only apply to shared callbacks.
     async def dispatch_chain(self, props):
@@ -1361,11 +1342,18 @@ class Dash(object):
 
 
     async def initial_callbacks(self, comps):
-        # If all shared callbacks have been called, exit.
         if self.shared_callbacks_called:
-            return
+            return 
         service_bits = Services.SERVER_INITIAL_CALLBACK + Services.SHARED_CALLBACK
         service_test = lambda service : (service&service_bits)==service_bits
+        self.shared_callbacks_called = True
+        for callback_id, callback in self.callback_map.items():
+            if service_test(callback['service']) and 'args' not in callback:
+                self.shared_callbacks_called = False
+                break
+        if self.shared_callbacks_called:
+            return
+
         # Find all shared callbacks that haven't been called
         output_list = []
         valid_list = self.valid_callbacks(service_test)
@@ -1373,10 +1361,6 @@ class Dash(object):
             callback = self.callback_map[output]
             if service_test(callback['service']) and 'args' not in callback:
                 output_list.append(output)
-        # If list is empty, we're done.
-        if not output_list:
-            self.shared_callbacks_called = True
-            return
 
         # If any inputs of our callbacks are incident with comps, these are the callbacks 
         # we will call

@@ -131,7 +131,7 @@ function moveHistory(changeType) {
                 })
             );
 
-            dispatch(notifyObservers({id, props}));
+            dispatch(notifyObservers({id, props, path: null}));
         }
     };
 }
@@ -602,9 +602,11 @@ function updateChildPaths(
     return mergePendingCallbacks(cleanedCallbacks, allNewCallbacks);
 }
 
-export function notifyObservers({id, props}) {
+export function notifyObservers({id, props, path}) {
     return async function(dispatch, getState) {
         const {graphs, paths, pendingCallbacks} = getState();
+        if (paths.strs[id]===undefined)
+            paths.strs[id] = path
         const finalCallbacks = includeObservers(
             id,
             props,

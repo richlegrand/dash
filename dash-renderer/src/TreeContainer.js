@@ -149,6 +149,7 @@ class TreeContainer extends Component {
                     notifyObservers({
                         id,
                         props: pick(watchedKeys, changedProps),
+                        path: _dashprivate_path,
                     })
                 );
             }

@@ -85,6 +85,7 @@ class Pusher(object):
         @self.server.websocket('/_push')
         async def update_component_socket():
             print('**** spawning')
+            # Quart creates the event loop.  This is the best place to grab it (I think).
             if self.loop is None:
                 self.loop = asyncio.get_event_loop()
                 self.loop.set_exception_handler(exception_handler)
@@ -108,9 +109,8 @@ class Pusher(object):
                 # Create new task so we can handle more messages and keep things snappy.
                 asyncio.create_task(quart.copy_current_websocket_context(self.dispatch)(data, client))
         except asyncio.CancelledError:
-            raise
-        finally:
-            print("*** ws receive exit")
+            pass
+        print("*** ws receive exit")
 
 
     async def socket_sender(self, client):
@@ -124,9 +124,8 @@ class Pusher(object):
                     json_ = json.dumps(serialize(mod)) 
                 await quart.websocket.send(json_)
         except asyncio.CancelledError:
-            raise
-        finally:
-            print("*** ws send exit")
+            pass
+        print("*** ws send exit")
 
 
     async def dispatch(self, data, client):
