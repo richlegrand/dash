@@ -131,7 +131,7 @@ function moveHistory(changeType) {
                 })
             );
 
-            dispatch(notifyObservers({id, props, path: null}));
+            dispatch(notifyObservers({id, props}));
         }
     };
 }
@@ -602,11 +602,9 @@ function updateChildPaths(
     return mergePendingCallbacks(cleanedCallbacks, allNewCallbacks);
 }
 
-export function notifyObservers({id, props, path}) {
+export function notifyObservers({id, props}) {
     return async function(dispatch, getState) {
         const {graphs, paths, pendingCallbacks} = getState();
-        if (paths.strs[id]===undefined)
-            paths.strs[id] = path
         const finalCallbacks = includeObservers(
             id,
             props,
@@ -617,6 +615,18 @@ export function notifyObservers({id, props, path}) {
         dispatch(startCallbacks(finalCallbacks));
     };
 }
+
+export function updatePaths({id, props, path}) {
+    return async function(dispatch, getState) {
+        const {graphs, paths, pendingCallbacks} = getState();
+        if ('children' in props) {
+            const newprops = {props: {children: props.children, id: id}};
+            const newPaths = computePaths(newprops, path, paths, null);
+            dispatch(setPaths(newPaths));
+        }
+    };
+}
+
 
 function includeObservers(id, props, graphs, paths, pendingCallbacks) {
     const changedProps = keys(props);
