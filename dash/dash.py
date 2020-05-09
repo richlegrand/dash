@@ -1039,7 +1039,7 @@ class Dash(object):
         )
         ```
         """
-        self._insert_callback(output, inputs, state)
+        self._insert_callback(output, inputs, state, Services.S0)
 
         # If JS source is explicitly given, create a namespace and function
         # name, then inject the code.

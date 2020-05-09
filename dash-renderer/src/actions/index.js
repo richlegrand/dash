@@ -131,7 +131,7 @@ function moveHistory(changeType) {
                 })
             );
 
-            dispatch(notifyObservers({id, props}));
+            dispatch(notifyObservers({id, props, notifyServer: true}));
         }
     };
 }
@@ -603,7 +603,7 @@ function updateChildPaths(
     return mergePendingCallbacks(cleanedCallbacks, allNewCallbacks);
 }
 
-export function notifyObservers({id, props}) {
+export function notifyObservers({id, props, notifyServer}) {
     return async function(dispatch, getState) {
         const {graphs, paths, pendingCallbacks} = getState();
         const finalCallbacks = includeObservers(
@@ -613,6 +613,14 @@ export function notifyObservers({id, props}) {
             paths,
             pendingCallbacks
         );
+        // If we aren't notifying the server, go through and remove all
+        // callbacks that aren't clientside functions.
+        if (!notifyServer) {
+            for (let i=finalCallbacks.length-1; i>=0; i--) {
+                if (finalCallbacks[i].callback.clientside_function===null)
+                    finalCallbacks.splice(i, 1);
+            }
+        }
         dispatch(startCallbacks(finalCallbacks));
     };
 }

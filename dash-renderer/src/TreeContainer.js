@@ -154,11 +154,12 @@ class TreeContainer extends Component {
             );
 
             // Only dispatch changes to Dash if a watched prop changed
-            if (notify && watchedKeys.length) {
+            if (watchedKeys.length) {
                 _dashprivate_dispatch(
                     notifyObservers({
                         id,
                         props: pick(watchedKeys, changedProps),
+                        notifyServer: notify,
                     })
                 );
             }

@@ -95,30 +95,11 @@ const pushee = {
         for (const id of ids) {
             if (id in pushee.setProps) {
                 const val = data[id];
-            	pushee.setProps[id](val, notify, pushee.updatePaths(val));
+            	pushee.setProps[id](val, notify, 'children' in val);
             }
             else
             	console.log('cannot find ' + id);
         }
-    },
-
-    updatePaths: function(val) {
-        if (typeof val!=='object')
-            return false
-        if ('id' in val)
-            return true;
-        else if (Array.isArray(val)) {
-            for (let i=0; i<val.length; i++) {
-                if (pushee.updatePaths(val[i]))
-                    return true;
-            }
-        }
-        else if ('props' in val)
-            return pushee.updatePaths(val.props);
-        else if ('children' in val) 
-            return pushee.updatePaths(val.children);
-        else
-            return false;
     },
 };
 
