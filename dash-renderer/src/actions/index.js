@@ -453,10 +453,11 @@ function handleServerside(config, payload, hooks, service) {
 
     return p.then(data => {
         const {multi, response} = data;
+        if (response===undefined)
+            return {};
         if (hooks.request_post !== null) {
             hooks.request_post(payload, response);
         }
-
         if (multi) {
             return response;
         }

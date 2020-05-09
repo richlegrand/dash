@@ -293,7 +293,7 @@ class Dash(object):
         suppress_callback_exceptions=None,
         show_undo_redo=False,
         plugins=None,
-        server_service=Services.NORMAL, 
+        server_service=Services.PUSHER_ALL, 
         callback_service=Services.S0,
         **obsolete
     ):
@@ -612,19 +612,18 @@ class Dash(object):
         self._index_string = value
 
     async def serve_layout(self, body=None, client=None, request_id=None):
-        layout = self._layout_value()
+        async with self.serve_layout_lock:            
+            layout = self._layout_value()
+            await self.handle_layout(None, None, layout)
 
-        if request_id is not None:
-            # We are assuming here that shared callbacks only work with PUSHER_OTHER enabled.
-            async with self.serve_layout_lock:            
-                await self.handle_layout(None, None, self._cached_layout)
+            if request_id is not None:
                 await self.pusher.respond(layout, request_id)
-        else:
-            # TODO - Set browser cache limit - pass hash into frontend
-            return quart.Response(
-                json.dumps(layout, cls=plotly.utils.PlotlyJSONEncoder),
-                mimetype="application/json",
-            )
+            else:
+                # TODO - Set browser cache limit - pass hash into frontend
+                return quart.Response(
+                    json.dumps(layout, cls=plotly.utils.PlotlyJSONEncoder),
+                    mimetype="application/json",
+                )
 
     def _config(self):
         # pieces of config needed by the front end
