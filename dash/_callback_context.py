@@ -75,4 +75,10 @@ class CallbackContext:
     def response(self):
         return getattr(g_cc.get(), "dash_response")
 
+    @property
+    @has_context
+    def client(self):
+        return getattr(g_cc.get(), "client")
+
+
 callback_context = CallbackContext()

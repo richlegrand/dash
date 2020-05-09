@@ -23,9 +23,10 @@ ALLSMALLER = _Wildcard("ALLSMALLER")
 
 
 class DashDependency:  # pylint: disable=too-few-public-methods
-    def __init__(self, component_id, component_property):
+    def __init__(self, component_id, component_property, component_value=None):
         self.component_id = component_id
         self.component_property = component_property
+        self.component_value = component_value
 
     def __str__(self):
         return "{}.{}".format(self.component_id_str(), self.component_property)

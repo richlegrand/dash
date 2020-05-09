@@ -47,6 +47,7 @@ from ._utils import (
     stringify_id,
     strip_relative_path,
 )
+from .dependencies import Output
 from .pusher import Pusher, Alock
 from . import _validate
 from . import _watch
@@ -425,7 +426,10 @@ class Dash(object):
     def list_to_mods(self, list_):
         mods = collections.defaultdict(dict)
         for i in list_:
-            mods[i['id']][i['property']] = i['value']
+            if isinstance(i, Output):
+                mods[i.component_id][i.component_property] = i.component_value
+            else:
+                mods[i['id']][i['property']] = i['value']
         return mods
 
 
@@ -489,14 +493,14 @@ class Dash(object):
             props = mods
             mods = self.list_to_mods(props)
         else:
+            if isinstance(mods, Output):
+                mods = {mods.component_id: {mods.component_property: mods.component_value}}
             props = self.mods_to_list(mods)
 
         output_list, x_list = self.callback_intersect(props, Services.shared_test)
-        if output_list and x_list:
-            raise Exception('Cannot send push_mods() on components with a mix of shared and non-shared callbacks.')
-        if output_list and client:
-            raise Exception('Must send push_mods() on components with shared callbacks to all clients.')
-        if output_list:
+        if output_list and client is None:
+            if x_list:
+                raise Exception('Cannot send push_mods() on components with a mix of shared and non-shared callbacks.')
             # We need to send input mods first before calling dispatch_chain
             await self.share_shared_mods(mods)
             await self.dispatch_chain(props)
@@ -511,9 +515,27 @@ class Dash(object):
 
     # Note, client==None means all clients.
     def push_mods(self, mods, client=None):
-        if self.pusher.loop is not None:
-            fut = asyncio.run_coroutine_threadsafe(self.push_mods_coro(mods, client), self.pusher.loop)
-            fut.result()
+        if self.pusher.loop is None:
+            raise Exception('Cannot call push_mods before run_server() is called.')
+        fut = asyncio.run_coroutine_threadsafe(self.push_mods_coro(mods, client), self.pusher.loop)
+        fut.result()
+
+    async def alt_return_coro(self, mods):
+        if Services.shared_test(g_cc.get().service):
+            client = None  
+        else:
+            client = g_cc.get().client
+        await self.push_mods_coro(mods, client)
+        raise PreventUpdate
+
+    def alt_return(self, mods):
+        if Services.shared_test(g_cc.get().service):
+            client = None  
+        else:
+            client = g_cc.get().client
+        self.push_mods(mods, client)
+        raise PreventUpdate
+
 
     def init_app(self, app=None):
         """Initialize the parts of Dash that require a flask app."""
@@ -1105,7 +1127,8 @@ class Dash(object):
                 ]
                 g.dash_response = response # None if pusher request
                 g.client = client # None if http request
-
+                g.service = service
+                
                 args = inputs_to_vals(inputs) + inputs_to_vals(state)
 
                 # remember args for shared callbacks
