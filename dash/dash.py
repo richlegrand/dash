@@ -377,6 +377,7 @@ class Dash(object):
         self.layout_components = {}
         self.handle_layout_lock = Alock()
         self.serve_layout_lock = Alock()
+        self.none_output_count = 0
 
         # list of inline scripts
         self._inline_scripts = []
@@ -1104,7 +1105,11 @@ class Dash(object):
     def callback(self, output, inputs, state=(), service=None):
         # if service isn't set, set to default callback service
         if service is None:
-            service = self.config.callback_service 
+            service = self.config.callback_service
+        if output is None:
+            output = Output('_none', str(self.none_output_count))
+            self.none_output_count += 1
+
         callback_id = self._insert_callback(output, inputs, state, service)
         multi = isinstance(output, (list, tuple))
 
@@ -1212,10 +1217,10 @@ class Dash(object):
             shared = Services.shared_test(self.callback_map[body["output"]]["service"])
             # Client will only be set on first callback in chain.  We only want to 
             # send changed props for first dispatch in chain.
-            # Share input changes with other clients, but not originating client.
+            # We share input changes with other clients, but not originating client.
             # Note, we could wait and merge input_mods with output_mods and send in 
-            # one combined message, but this gets the changes sent without the latency
-            # of the callback. 
+            # one combined message, but this way, we get the changes sent without the 
+            # latency of the callback. 
             if client and shared: 
                 input_mods = collections.defaultdict(dict)
                 for cpi in body['changedPropIds']:
@@ -1227,11 +1232,12 @@ class Dash(object):
             # Call callback.
             try:
                 json_response, response = await self.call_callback(body, None, client)
+                if '_none' in response['response']:
+                    raise PreventUpdate
             except PreventUpdate:
                 if request_id is not None:
                     await self.pusher.respond({}, request_id) # send empty response
                 return
-
             # Handle response if this is a request.
             if request_id is not None:
                 if shared:

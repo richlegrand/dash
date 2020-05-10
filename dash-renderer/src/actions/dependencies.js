@@ -324,6 +324,8 @@ function findDuplicateOutputs(outputs, head, dispatchError, outStrs, outObjs) {
     const newOutputStrs = {};
     const newOutputObjs = [];
     outputs.forEach(({id, property}, i) => {
+        if (id==='_none')
+            return;
         if (typeof id === 'string') {
             const idProp = combineIdAndProp({id, property});
             if (newOutputStrs[idProp]) {
@@ -494,6 +496,8 @@ export function validateCallbacksToLayout(state_, dispatchError) {
     }
 
     function validateProp(id, idPath, prop, cls, callbacks) {
+        if (id==='_none')
+            return;
         const component = path(idPath, layout);
         const element = Registry.resolve(component);
 

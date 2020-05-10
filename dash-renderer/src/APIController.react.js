@@ -101,9 +101,10 @@ function storeEffect(props, events, setErrorLoading) {
                 layoutRequest.content,
                 dispatch
             );
-            dispatch(
-                setPaths(computePaths(finalLayout, [], null, events.current))
-            );
+            const paths = computePaths(finalLayout, [], null, events.current);
+            // Add object for callbacks with no output
+            paths.strs['_none'] = ['props', 'children', Object.keys(paths.strs).length];
+            dispatch(setPaths(paths));
             dispatch(setLayout(finalLayout));
         }
     }
