@@ -67,6 +67,9 @@ class Client(object):
         self.host = quart.websocket.host
         self.authentication = None
 
+    def __str__(self):
+        return "<Client: connect_time={}, address={}, host={}, authentication={}>".format(
+            self.connect_time, self.address, self.host, self.authentication)
 
 def exception_handler(loop, context):
     task = context['future']
@@ -79,7 +82,7 @@ class Pusher(object):
         self.clients = []
         self.loop = None
         self.url_map = {}
-        self.lock = None
+        self.connect_callback = None
 
         # websocket connection handler 
         @self.server.websocket('/_push')
@@ -89,14 +92,24 @@ class Pusher(object):
             if self.loop is None:
                 self.loop = asyncio.get_event_loop()
                 self.loop.set_exception_handler(exception_handler)
+
             client = Client()
             self.clients.append(client)
+
+            if self.connect_callback is not None:
+                self.connect_callback(client, True)
+
             socket_sender = asyncio.create_task(quart.copy_current_websocket_context(self.socket_sender)(client))
             socket_receiver = asyncio.create_task(quart.copy_current_websocket_context(self.socket_receiver)(client))
+
             try:
                 await asyncio.gather(socket_sender, socket_receiver)
             finally:
                 self.clients.remove(client)
+
+                if self.connect_callback is not None:
+                    self.connect_callback(client, False)
+
                 print('*** exitting')
 
 
@@ -160,4 +173,7 @@ class Pusher(object):
                     await client.send_queue.put(message)
         else:
             await client.send_queue.put(message)
-        
+
+    def callback_connect(self, func):
+        self.connect_callback = func;
+

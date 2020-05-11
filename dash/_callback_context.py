@@ -80,5 +80,4 @@ class CallbackContext:
     def client(self):
         return getattr(g_cc.get(), "client")
 
-
 callback_context = CallbackContext()

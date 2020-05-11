@@ -1151,13 +1151,15 @@ class Dash(object):
                     if lock is not None:
                         lock.release()
 
-                if isinstance(output_value, _NoUpdate):
+                if isinstance(output_value, _NoUpdate) or \
+                    'id' in outputs_list and outputs_list['id']=='_none':
                     raise PreventUpdate
 
                 # wrap single outputs so we can treat them all the same
                 # for validation and response creation
                 if not multi:
                     output_value, outputs_list = [output_value], [outputs_list]
+
 
                 _validate.validate_multi_return(outputs_list, output_value, callback_id)
 
@@ -1232,8 +1234,6 @@ class Dash(object):
             # Call callback.
             try:
                 json_response, response = await self.call_callback(body, None, client)
-                if '_none' in response['response']:
-                    raise PreventUpdate
             except PreventUpdate:
                 if request_id is not None:
                     await self.pusher.respond({}, request_id) # send empty response
@@ -1262,6 +1262,13 @@ class Dash(object):
             response.set_data(json_output)
             return response
 
+    def callback_connect(self, func):
+            self.pusher.callback_connect(func)
+
+    @property
+    def clients(self):
+        return self.pusher.clients
+    
     def intersect_ids(self, list0, list1):
         id0 = [i['id'] for i in list0]
         id1 = [i['id'] for i in list1]
