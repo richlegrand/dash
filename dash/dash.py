@@ -46,6 +46,12 @@ from ._utils import (
     split_callback_id,
     stringify_id,
     strip_relative_path,
+    runcoro,
+    list_to_mods,
+    mods_to_list,
+    flatten_layout,
+    intersect_ids, 
+    find_prop_value,
 )
 from .dependencies import Output
 from .pusher import Pusher, Alock
@@ -147,12 +153,6 @@ var ns = clientside["{namespace}"] = clientside["{namespace}"] || {{}};
 ns["{function_name}"] = {clientside_function};
 """
 
-# Run a coroutine outside any event loop
-def runcoro(coro):
-    try:
-        coro.send(None)
-    except StopIteration as e:
-        return e.value
 
 # pylint: disable=too-many-instance-attributes
 # pylint: disable=too-many-arguments, too-many-locals
@@ -425,45 +425,11 @@ class Dash(object):
         if self.server is not None:
             self.init_app()
 
-
-    def list_to_mods(self, list_):
-        mods = collections.defaultdict(dict)
-        for i in list_:
-            if isinstance(i, Output):
-                mods[i.component_id][i.component_property] = i.component_value
-            else:
-                mods[i['id']][i['property']] = i['value']
-        return mods
-
-
-    def mods_to_list(self, mods):
-        list_ = []
-        for id_, vals in mods.items():
-            for prop, val in vals.items():
-                list_.append({'id': id_, 'property': prop, 'value': val})
-        return list_
-
-
-    def flatten_layout(self, layout):
-        if hasattr(layout, 'children'):
-            if hasattr(layout, 'id'):
-                return [layout] + self.flatten_layout(layout.children)
-            else:
-                return self.flatten_layout(layout.children)
-        if isinstance(layout, (list, tuple)):
-            res = []
-            for i in layout:
-                res.extend(self.flatten_layout(i))
-            return res
-        if hasattr(layout, 'id'):
-            return [layout]
-        return []
-
     
     async def handle_layout(self, id_, prop, val):
         async with self.handle_layout_lock:
             if id_ is None or prop=='children':
-                comps = self.flatten_layout(val)
+                comps = flatten_layout(val)
                 for comp in comps:
                     try:
                         self.layout_components[comp.id]
@@ -494,11 +460,11 @@ class Dash(object):
     async def push_mods_coro(self, mods, client=None):
         if isinstance(mods, list):
             props = mods
-            mods = self.list_to_mods(props)
+            mods = list_to_mods(props)
         else:
             if isinstance(mods, Output):
                 mods = {mods.component_id: {mods.component_property: mods.component_value}}
-            props = self.mods_to_list(mods)
+            props = mods_to_list(mods)
 
         callback_ids, x_list = self.callback_intersect(props, Services.shared_test)
         if callback_ids and client is None:
@@ -1154,7 +1120,7 @@ class Dash(object):
                 # List of alternate results
                 elif isinstance(output_value, (list, tuple)) and len(output_value)>0 and \
                     isinstance(output_value[0], Output):
-                    component_ids = self.list_to_mods(output_value)
+                    component_ids = list_to_mods(output_value)
                     alt = True
                 # output==none
                 elif 'id' in outputs_list and outputs_list['id']=='_none':
@@ -1233,7 +1199,7 @@ class Dash(object):
                 input_mods = collections.defaultdict(dict)
                 for cpi in body['changedPropIds']:
                     id_, prop = cpi.split('.')
-                    input_mods[id_][prop] = self.find_prop_value(body['inputs'], id_, prop)
+                    input_mods[id_][prop] = find_prop_value(body['inputs'], id_, prop)
                     if service&Services.SHARE_SHARED:
                         print('send input mods', input_mods, client)
                         await self.share_shared_mods(input_mods, client)
@@ -1262,7 +1228,7 @@ class Dash(object):
             # Share changed props and outputs with all clients if it's a shared callback.
             if shared:
                 output_mods = response['response']
-                outputs = self.mods_to_list(output_mods)
+                outputs = mods_to_list(output_mods)
                 if service&Services.SHARE_SHARED:
                     print('send output mods', output_mods)
                     await self.share_shared_mods(output_mods)
@@ -1285,18 +1251,6 @@ class Dash(object):
     def clients(self):
         return self.pusher.clients
     
-    def intersect_ids(self, list0, list1):
-        id0 = [i['id'] for i in list0]
-        id1 = [i['id'] for i in list1]
-        return list(set(id0).intersection(id1))
-
-
-    def find_prop_value(self, props, id_, prop):
-        for i in props:
-            if i['id']==id_ and i['property']==prop:
-                return i['value']
-        return None
-
 
     def valid_callback_ids(self, service_test):
         valid = []
@@ -1330,11 +1284,11 @@ class Dash(object):
 
     def callback_intersect(self, props, service_test, callback_ids=None):
         return self.callback_compare(props, service_test, 
-            lambda i : self.intersect_ids(i, props), callback_ids)
+            lambda i : intersect_ids(i, props), callback_ids)
 
     def callback_diff(self, props, service_test, callback_ids=None):
         return self.callback_compare(props, service_test, 
-            lambda i : not self.intersect_ids(i, props), callback_ids)
+            lambda i : not intersect_ids(i, props), callback_ids)
 
     # This method can only apply to shared callbacks.
     def callback_body(self, output, inputs):

@@ -241,3 +241,57 @@ def job(msg=""):
         return _wrapper
 
     return wrapper
+
+
+# Run a coroutine outside any event loop
+def runcoro(coro):
+    try:
+        coro.send(None)
+    except StopIteration as e:
+        return e.value
+
+def list_to_mods(list_):
+    mods = collections.defaultdict(dict)
+    for i in list_:
+        if isinstance(i, Output):
+            mods[i.component_id][i.component_property] = i.component_value
+        else:
+            mods[i['id']][i['property']] = i['value']
+    return mods
+
+
+def mods_to_list(mods):
+    list_ = []
+    for id_, vals in mods.items():
+        for prop, val in vals.items():
+            list_.append({'id': id_, 'property': prop, 'value': val})
+    return list_
+
+
+def flatten_layout(layout):
+    if hasattr(layout, 'children'):
+        if hasattr(layout, 'id'):
+            return [layout] + flatten_layout(layout.children)
+        else:
+            return flatten_layout(layout.children)
+    if isinstance(layout, (list, tuple)):
+        res = []
+        for i in layout:
+            res.extend(flatten_layout(i))
+        return res
+    if hasattr(layout, 'id'):
+        return [layout]
+    return []
+
+
+def intersect_ids(list0, list1):
+    id0 = [i['id'] for i in list0]
+    id1 = [i['id'] for i in list1]
+    return list(set(id0).intersection(id1))
+
+
+def find_prop_value(props, id_, prop):
+    for i in props:
+        if i['id']==id_ and i['property']==prop:
+            return i['value']
+    return None
