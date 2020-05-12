@@ -25,29 +25,28 @@ context_rcount = ContextVar('context_rcount')
 
 # This class defers the creation of the asyncio Lock until it's needed,
 # to prevent issues with creating the lock before the event loop is running.
-# It also handles recurrence/recursion. 
+# It also handles reentrance/recursion. 
 class Alock:
     def __init__(self):
         self.lock = None
 
-    async def __aenter__(self):
+    async def acquire(self):
         if self.lock is None:
             self.lock = asyncio.Lock()
         try: 
             rcount = context_rcount.get()
         except LookupError:    
-            # This is the first acquisition in this context, so get lock.  
+            # This is the first acquisition in this context, so get lock, set count
             await self.lock.acquire()
             context_rcount.set(1)
-            return self.lock
+            return 
         if rcount==0:
             # We've locked and unlocked within this context already. We need to reacquire lock.
             await self.lock.acquire()
 
         context_rcount.set(rcount + 1)
-        return self.lock
 
-    async def __aexit__(self, exc_type, exc_value, traceback):
+    def release(self):
         rcount = context_rcount.get() - 1
         context_rcount.set(rcount)
         if rcount==0:
@@ -58,6 +57,12 @@ class Alock:
             return False
         return self.lock.locked()
 
+    async def __aenter__(self):
+        await self.acquire()
+        return self.lock
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        self.release()
 
 class Client(object):
     def __init__(self):

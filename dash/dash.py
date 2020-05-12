@@ -521,22 +521,6 @@ class Dash(object):
         fut = asyncio.run_coroutine_threadsafe(self.push_mods_coro(mods, client), self.pusher.loop)
         fut.result()
 
-    async def alt_return_coro(self, mods):
-        if Services.shared_test(g_cc.get().service):
-            client = None  
-        else:
-            client = g_cc.get().client
-        await self.push_mods_coro(mods, client)
-        raise PreventUpdate
-
-    def alt_return(self, mods):
-        if Services.shared_test(g_cc.get().service):
-            client = None  
-        else:
-            client = g_cc.get().client
-        self.push_mods(mods, client)
-        raise PreventUpdate
-
 
     def init_app(self, app=None):
         """Initialize the parts of Dash that require a flask app."""
@@ -1114,6 +1098,7 @@ class Dash(object):
         multi = isinstance(output, (list, tuple))
 
         def wrap_func(func):
+            is_coro = inspect.iscoroutinefunction(func)
             @wraps(func)
             async def add_context(body, response, lock, client):
                 g = _Context()  
@@ -1132,7 +1117,6 @@ class Dash(object):
                 ]
                 g.dash_response = response # None if pusher request
                 g.client = client # None if http request
-                g.service = service
                 
                 args = inputs_to_vals(inputs) + inputs_to_vals(state)
 
@@ -1140,44 +1124,62 @@ class Dash(object):
                 if Services.shared_test(service):
                     self.callback_map[output]["args"] = {"inputs": deepcopy(inputs), "state": deepcopy(state)}
 
-                if lock is not None:
-                    lock.acquire()
-                try:
-                    if inspect.iscoroutinefunction(func):
-                        output_value = await func(*args)  # %% callback invoked
-                    else:
-                        output_value = func(*args)  # %% callback invoked
-                finally:
+                if is_coro:
                     if lock is not None:
-                        lock.release()
+                        await lock.acquire()
+                    try:
+                        output_value = await func(*args)  # %% callback invoked
+                    finally:
+                        if lock is not None:
+                            lock.release()
+                else:
+                    if lock is not None:
+                        lock.acquire()
+                    try:
+                        output_value = func(*args)  # %% callback invoked
+                    finally:
+                        if lock is not None:
+                            lock.release()
 
-                if isinstance(output_value, _NoUpdate) or \
-                    'id' in outputs_list and outputs_list['id']=='_none':
+                alt = False
+                if isinstance(output_value, _NoUpdate):
                     raise PreventUpdate
-
-                # wrap single outputs so we can treat them all the same
-                # for validation and response creation
-                if not multi:
-                    output_value, outputs_list = [output_value], [outputs_list]
-
-
-                _validate.validate_multi_return(outputs_list, output_value, callback_id)
-
-                component_ids = collections.defaultdict(dict)
-                has_update = False
-                for val, spec in zip(output_value, outputs_list):
-                    if isinstance(val, _NoUpdate):
-                        continue
-                    for vali, speci in (
-                        zip(val, spec) if isinstance(spec, list) else [[val, spec]]
-                    ):
-                        if not isinstance(vali, _NoUpdate):
-                            has_update = True
-                            id_str = stringify_id(speci["id"])
-                            component_ids[id_str][speci["property"]] = vali
-
-                if not has_update:
+                # Single alternate result
+                elif isinstance(output_value, Output):
+                    component_ids = {output_value.component_id: 
+                        {output_value.component_property: output_value.component_value}}
+                    alt = True
+                # List of alternate results
+                elif isinstance(output_value, (list, tuple)) and len(output_value)>0 and \
+                    isinstance(output_value[0], Output):
+                    component_ids = self.list_to_mods(output_value)
+                    alt = True
+                # output==none
+                elif 'id' in outputs_list and outputs_list['id']=='_none':
                     raise PreventUpdate
+                else:
+                    # wrap single outputs so we can treat them all the same
+                    # for validation and response creation
+                    if not multi:
+                        output_value, outputs_list = [output_value], [outputs_list]
+
+                    _validate.validate_multi_return(outputs_list, output_value, callback_id)
+
+                    component_ids = collections.defaultdict(dict)
+                    has_update = False
+                    for val, spec in zip(output_value, outputs_list):
+                        if isinstance(val, _NoUpdate):
+                            continue
+                        for vali, speci in (
+                            zip(val, spec) if isinstance(spec, list) else [[val, spec]]
+                        ):
+                            if not isinstance(vali, _NoUpdate):
+                                has_update = True
+                                id_str = stringify_id(speci["id"])
+                                component_ids[id_str][speci["property"]] = vali
+
+                    if not has_update:
+                        raise PreventUpdate
 
                 response = {"response": component_ids, "multi": True}
 
@@ -1188,11 +1190,10 @@ class Dash(object):
                 except TypeError:
                     _validate.fail_callback_output(output_value, output)
 
-                return jsonResponse, response
+                return jsonResponse, response, alt
 
-            is_coro = inspect.iscoroutinefunction(func)
             if is_coro:
-                lock = asyncio.Lock() if service&Services.SERIALIZED_CALLBACKS else None
+                lock = Alock() if service&Services.SERIALIZED_CALLBACKS else None
             else:
                 lock = threading.Lock() if service&Services.SERIALIZED_CALLBACKS else None 
             self.callback_map[callback_id]["callback"] = add_context, is_coro, lock
@@ -1210,10 +1211,12 @@ class Dash(object):
             loop = asyncio.get_event_loop()
             # The callback isn't a coroutine, so we need to run in an executor.
             # Note, there is no easy way to have a wrapper return a coroutine or routine conditionally...
-            # So func is always a coroutine and runcoro() allows us to run a coroutine 
-            # inside executor thread.  
+            # So func is always declared a coroutine and runcoro() allows us to run it
+            # (without any awaits -- it's only declared a coroutine) inside executor thread.  
             return await loop.run_in_executor(None, runcoro, func(body, response, lock, client))  # %% callback invoked 
 
+    # dispatch() and callback() are fairly complex because we're handling various cases:
+    # Shared/unshared, coro/threaded, socket service/http service, alt response/regular response/no response.
     async def dispatch(self, body=None, client=None, request_id=None):
         if body:        
             shared = Services.shared_test(self.callback_map[body["output"]]["service"])
@@ -1233,7 +1236,7 @@ class Dash(object):
 
             # Call callback.
             try:
-                json_response, response = await self.call_callback(body, None, client)
+                json_response, response, alt = await self.call_callback(body, None, client)
             except PreventUpdate:
                 if request_id is not None:
                     await self.pusher.respond({}, request_id) # send empty response
@@ -1244,7 +1247,13 @@ class Dash(object):
                     # Prevent notifications caused by update/setProps at client
                     await self.pusher.respond({}, request_id)
                 else:
-                    await self.pusher.respond(response, request_id) 
+                    if alt: 
+                        # If not shared and alt result, we need to return empty result and push alt
+                        # result so the right callbacks are called.
+                        await self.pusher.respond({}, request_id)
+                        await self.push_mods_coro(response["response"], client)
+                    else:
+                        await self.pusher.respond(response, request_id) 
 
             # Share changed props and outputs with all clients if it's a shared callback.
             if shared:
@@ -1258,7 +1267,9 @@ class Dash(object):
         else:
             body = await quart.request.get_json()
             response = quart.Response(None, mimetype="application/json")
-            json_output, output = await self.call_callback(body, response, None)
+            json_output, output, alt = await self.call_callback(body, response, None)
+            if alt:
+                raise Exception('Cannot return alternative results with server_service not set to PUSHER_ALL.')            
             response.set_data(json_output)
             return response
 
@@ -1302,7 +1313,7 @@ class Dash(object):
         callbacks = []
         x_callbacks = []
         if output_list is None:
-            output_list = self.valid_callbacks(service_test)
+            output_list = self.valid_callbacks(lambda x : True)
         for output in output_list:
             callback = self.callback_map[output]
             if test(callback["inputs"]):
