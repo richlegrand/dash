@@ -107,15 +107,15 @@ class _Context(object):
     # pylint: disable=too-few-public-methods
     pass
 
-
+#
 g_cc = ContextVar("calling_context")
 
 
 class Services(object):
-    # Service bits
-    # update component, opposite = http update
+    # Service bits:
+    # Update component over socket, opposite = http update
     PUSHER_UPDATE = 1<<0 
-    # dependencies, layout, reload_hash, opposite = http requests
+    # Dependencies, layout and reload_hash requests over socket, opposite = http requests
     PUSHER_OTHER = 1<<1  
     # not supported for server_service, opposite = initial callback from each client    
     NO_CLIENT_INITIAL_CALLBACK = 1<<2 
@@ -126,18 +126,21 @@ class Services(object):
     # not supported for server_service, opposite = concurrent callbacks
     SERIALIZED_CALLBACK = 1<<5
     # not supported for server service, opposite = do not inform other clients of shared changes
-    SHARE_SHARED = 1<<6
+    SHARE_WITH_OTHER_CLIENTS = 1<<6
 
-    # callback services
-    S0 = 0 # NORMAL
-    S1 = PUSHER_UPDATE + NO_CLIENT_INITIAL_CALLBACK + SHARED_CALLBACK + \
-        SERVER_INITIAL_CALLBACK + SERIALIZED_CALLBACK + SHARE_SHARED
+    # Callback services:
+    # S0: normal dash service
+    S0 = 0 
+
+    # SHARED aka S1: all clients see the same thing, e.g. one device.
+    SHARED = PUSHER_UPDATE + NO_CLIENT_INITIAL_CALLBACK + SHARED_CALLBACK + \
+        SERVER_INITIAL_CALLBACK + SERIALIZED_CALLBACK + SHARE_WITH_OTHER_CLIENTS
+
+    # S2: clients see different things, e.g. N devices.
     S2 = PUSHER_UPDATE + SERIALIZED_CALLBACK
 
-    # server services
-    PUSHER_ALL = PUSHER_UPDATE + PUSHER_OTHER  
-
-    # server and callback services
+    # Server services:
+    PUSHER_ALL = PUSHER_UPDATE + PUSHER_OTHER  # Everything sent over socket except assets
     NORMAL = 0
 
     @staticmethod
@@ -378,7 +381,6 @@ class Dash(object):
         # Table of components, indexed by id
         self.layout_components = {}
         self.handle_layout_lock = Alock()
-        self.serve_layout_lock = Alock()
         self.none_output_count = 0
 
         # list of inline scripts
@@ -438,8 +440,11 @@ class Dash(object):
                 await self._initial_callbacks(comps)
 
             if id_ and prop:
-                comp = self.layout_components[id_]
-                setattr(comp, prop, val)
+                try: # Handle races with push_mods.
+                    comp = self.layout_components[id_]
+                    setattr(comp, prop, val)
+                except:
+                    pass
 
 
     async def mod_layout(self, mods):
@@ -451,10 +456,9 @@ class Dash(object):
 
 
     async def share_shared_mods(self, mods, x_client=None):
-        # Don't send updates for this task while gathering layout to serve
-        if not self.serve_layout_lock.locked():
-            await self.pusher.send("mod", mods, x_client=x_client)
+        result = await self.pusher.send("mod", mods, x_client=x_client)
         await self.mod_layout(mods)
+        return result
 
 
     async def push_mods_coro(self, mods, client=None):
@@ -471,7 +475,7 @@ class Dash(object):
             if x_list:
                 raise Exception("Cannot send push_mods() on components with a mix of shared and non-shared callbacks.")
             # We need to send input mods first before calling _dispatch_chain
-            await self.share_shared_mods(mods)
+            result = await self.share_shared_mods(mods)
             await self._dispatch_chain(props)
         else:
             # If we modify all clients, we should modify layout.
@@ -480,14 +484,15 @@ class Dash(object):
             # If component isn't shared we modify with notification.  
             # If component doesn't have any callbacks we also modify with notification
             # (and subsequently don't get called back, which is correct behavior.)
-            await self.pusher.send("mod_n", mods, client) 
+            result = await self.pusher.send("mod_n", mods, client) 
+        return result
 
     # Note, client==None means all clients.
     def push_mods(self, mods, client=None):
         if self.pusher.loop is None:
             raise Exception("Cannot call push_mods before run_server() is called.")
         fut = asyncio.run_coroutine_threadsafe(self.push_mods_coro(mods, client), self.pusher.loop)
-        fut.result()
+        return fut.result()
 
 
     def init_app(self, app=None):
@@ -587,18 +592,19 @@ class Dash(object):
         self._index_string = value
 
     async def serve_layout(self, body=None, client=None, request_id=None):
-        async with self.serve_layout_lock:            
-            layout = self._layout_value()
-            await self.handle_layout(None, None, layout)
+        layout = self._layout_value()
+        await self.handle_layout(None, None, layout)
 
-            if request_id is not None:
-                await self.pusher.respond(layout, request_id)
-            else:
-                # TODO - Set browser cache limit - pass hash into frontend
-                return quart.Response(
-                    json.dumps(layout, cls=plotly.utils.PlotlyJSONEncoder),
-                    mimetype="application/json",
-                )
+        if request_id is not None:
+            await self.pusher.respond(layout, request_id)
+        else:
+            # TODO - Set browser cache limit - pass hash into frontend
+            return quart.Response(
+                json.dumps(layout, cls=plotly.utils.PlotlyJSONEncoder),
+                mimetype="application/json",
+            )
+        if client is not None:
+            client.served_layout = True
 
     def _config(self):
         # pieces of config needed by the front end
@@ -1048,8 +1054,8 @@ class Dash(object):
     def callback_s0(self, output, inputs, state=()):
         return self.callback(output, inputs, state, Services.S0)
 
-    def callback_s1(self, output, inputs, state=()):
-        return self.callback(output, inputs, state, Services.S1)
+    def callback_shared(self, output, inputs, state=()):
+        return self.callback(output, inputs, state, Services.SHARED)
 
     def callback_s2(self, output, inputs, state=()):
         return self.callback(output, inputs, state, Services.S2)
@@ -1200,7 +1206,7 @@ class Dash(object):
                 for cpi in body["changedPropIds"]:
                     id_, prop = cpi.split(".")
                     input_mods[id_][prop] = find_prop_value(body["inputs"], id_, prop)
-                    if service&Services.SHARE_SHARED:
+                    if service&Services.SHARE_WITH_OTHER_CLIENTS:
                         print("send input mods", input_mods, client)
                         await self.share_shared_mods(input_mods, client)
 
@@ -1229,7 +1235,7 @@ class Dash(object):
             if shared:
                 output_mods = response["response"]
                 outputs = mods_to_list(output_mods)
-                if service&Services.SHARE_SHARED:
+                if service&Services.SHARE_WITH_OTHER_CLIENTS:
                     print("send output mods", output_mods)
                     await self.share_shared_mods(output_mods)
                 callback_ids, x_list = await self._dispatch_chain(outputs)

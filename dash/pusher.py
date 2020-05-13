@@ -4,6 +4,7 @@ import quart
 from contextvars import ContextVar
 import time
 import sys
+import inspect
 
 def serialize(obj):
     if hasattr(obj, 'to_plotly_json'):
@@ -66,6 +67,7 @@ class Alock:
 
 class Client(object):
     def __init__(self):
+        self.served_layout = False
         self.send_queue = asyncio.Queue()
         self.connect_time = time.time()
         self.address = quart.websocket.remote_addr
@@ -73,8 +75,8 @@ class Client(object):
         self.authentication = None
 
     def __str__(self):
-        return "<Client: connect_time={}, address={}, host={}, authentication={}>".format(
-            self.connect_time, self.address, self.host, self.authentication)
+        return "<Client: address={}, host={}, authentication={}>".format(
+            self.address, self.host, self.authentication)
 
 def exception_handler(loop, context):
     task = context['future']
@@ -98,24 +100,31 @@ class Pusher(object):
                 self.loop = asyncio.get_event_loop()
                 self.loop.set_exception_handler(exception_handler)
 
+            tasks = []
             client = Client()
             self.clients.append(client)
 
             if self.connect_callback is not None:
-                self.connect_callback(client, True)
+                tasks.append(asyncio.create_task(self.call_connect_callback(client, True)))
 
-            socket_sender = asyncio.create_task(quart.copy_current_websocket_context(self.socket_sender)(client))
-            socket_receiver = asyncio.create_task(quart.copy_current_websocket_context(self.socket_receiver)(client))
+            tasks.append(asyncio.create_task(quart.copy_current_websocket_context(self.socket_sender)(client)))
+            tasks.append(asyncio.create_task(quart.copy_current_websocket_context(self.socket_receiver)(client)))
 
             try:
-                await asyncio.gather(socket_sender, socket_receiver)
+                await asyncio.gather(*tasks)
             finally:
                 self.clients.remove(client)
 
                 if self.connect_callback is not None:
-                    self.connect_callback(client, False)
-
+                    await asyncio.create_task(self.call_connect_callback(client, False))
                 print('*** exitting')
+
+
+    async def call_connect_callback(self, client, connect):
+        if inspect.iscoroutinefunction(self.connect_callback):
+            await self.connect_callback(client, connect)
+        else:
+            await self.loop.run_in_executor(None, self.connect_callback, client, connect) 
 
 
     async def socket_receiver(self, client):
@@ -168,16 +177,25 @@ class Pusher(object):
         self.url_map[url] = callback
 
     async def send(self, id_, data, client=None, x_client=None):
+        result = 0
         message = {'id': id_, 'data': data}
 
-        # send by putting in event loop
-        # Oddly, push_nowait doesn't get serviced right away, so we use asyncio.run_coroutine_threadsafe
-        if client is None: # send to all clients
+        # Send to all clients.
+        if client is None: 
             for client in self.clients:
                 if client is not x_client:
-                    await client.send_queue.put(message)
+                    if client.served_layout:
+                        await client.send_queue.put(message)
+                    else:
+                        result -= 1
+        # Send to one client.
         else:
-            await client.send_queue.put(message)
+            if client.served_layout:
+                await client.send_queue.put(message)
+            else:
+                result -= 1
+        # Give caller feedback regarding failed sends.
+        return result
 
     def callback_connect(self, func):
         self.connect_callback = func;
