@@ -1,26 +1,11 @@
 import asyncio
 import json
 import quart
+import plotly
 from contextvars import ContextVar
 import time
 import sys
 import inspect
-
-def serialize(obj):
-    if hasattr(obj, 'to_plotly_json'):
-        return serialize(obj.to_plotly_json())
-    if isinstance(obj, dict):
-        res = {}
-        for key in obj:
-            res[key] = serialize(obj[key])
-        return res
-    if isinstance(obj, list) or isinstance(obj, tuple):
-        res = []
-        for i in obj:
-            res.append(serialize(i))
-        return res
-    return obj
-
 
 context_rcount = ContextVar('context_rcount')
 
@@ -145,10 +130,7 @@ class Pusher(object):
         try:
             while True:
                 mod = await client.send_queue.get()
-                try:
-                    json_ = json.dumps(mod)
-                except TypeError:
-                    json_ = json.dumps(serialize(mod)) 
+                json_ = json.dumps(mod, cls=plotly.utils.PlotlyJSONEncoder)
                 await quart.websocket.send(json_)
         except asyncio.CancelledError:
             pass
@@ -167,10 +149,7 @@ class Pusher(object):
     async def respond(self, data, request_id):
         assert request_id is not None
         data = {'id': request_id, 'data': data}
-        try:
-            json_ = json.dumps(data)
-        except TypeError:
-            json_ = json.dumps(serialize(data)) 
+        json_ = json.dumps(data, cls=plotly.utils.PlotlyJSONEncoder)
         await quart.websocket.send(json_)
 
     def add_url(self, url, callback):
