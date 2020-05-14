@@ -20,7 +20,7 @@ import {
     propOr,
     type,
 } from 'ramda';
-import {notifyObservers, updateProps, updatePaths} from './actions';
+import {notifyObservers, updateProps, handleIdProps} from './actions';
 import isSimpleComponent from './isSimpleComponent';
 import {recordUiEdit} from './persistence';
 import ComponentErrorBoundary from './components/error/ComponentErrorBoundary.react';
@@ -109,7 +109,7 @@ class TreeContainer extends Component {
         pusheeAdd(props._dashprivate_layout.props, this.setProps);
     }
 
-    setProps(newProps, notify=true, updatePaths_=false) {
+    setProps(newProps, notify=true, updatePaths=false) {
         const {
             _dashprivate_graphs,
             _dashprivate_dispatch,
@@ -131,12 +131,11 @@ class TreeContainer extends Component {
                 _dashprivate_graphs
             );
 
-            if (updatePaths_) {
+            if (updatePaths) {
                 _dashprivate_dispatch(
-                    updatePaths({
+                    handleIdProps({
                         id, 
-                        props: newProps, 
-                        path: _dashprivate_path
+                        props: newProps
                     })
                 );
             }

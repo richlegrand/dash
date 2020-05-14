@@ -12,6 +12,7 @@ import json
 from functools import wraps
 import future.utils as utils
 from . import exceptions
+from .dependencies import Output
 
 logger = logging.getLogger()
 

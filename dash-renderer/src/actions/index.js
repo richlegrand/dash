@@ -625,15 +625,93 @@ export function notifyObservers({id, props, notifyServer}) {
     };
 }
 
-export function updatePaths({id, props, path}) {
+// This code is mostly copied from handleData... TODO: combine/clean up
+// It allows us to insert subtrees into the layout from the pushee outside of a callback.  
+export function handleIdProps({id, props}) {
     return async function(dispatch, getState) {
-        const {graphs, paths, pendingCallbacks} = getState();
-        if ('children' in props) {
-            const newprops = {props: {children: props.children, id: id}};
-            const newPaths = computePaths(newprops, path, paths, null);
-            dispatch(setPaths(newPaths));
-        }
-    };
+        let {pendingCallbacks} = getState();
+        const data = {}
+        data[id] = props;
+        const updated = [];
+        Object.entries(data).forEach(([id, props]) => {
+            const parsedId = parseIfWildcard(id);
+
+            const {layout: oldLayout, paths: oldPaths} = getState();
+
+            const appliedProps = doUpdateProps(
+                dispatch,
+                getState,
+                parsedId,
+                props
+            );
+            if (appliedProps) {
+                // doUpdateProps can cause new callbacks to be added
+                // via derived props - update pendingCallbacks
+                // But we may also need to merge in other callbacks that
+                // we found in an earlier interation of the data loop.
+                const statePendingCallbacks = getState().pendingCallbacks;
+                if (statePendingCallbacks !== pendingCallbacks) {
+                    pendingCallbacks = mergePendingCallbacks(
+                        pendingCallbacks,
+                        statePendingCallbacks
+                    );
+                }
+
+                Object.keys(appliedProps).forEach(property => {
+                    updated.push(combineIdAndProp({id, property}));
+                });
+
+                if (has('children', appliedProps)) {
+                    const oldChildren = path(
+                        concat(getPath(oldPaths, parsedId), [
+                            'props',
+                            'children',
+                        ]),
+                        oldLayout
+                    );
+                    // If components changed, need to update paths,
+                    // check if all pending callbacks are still
+                    // valid, and add all callbacks associated with
+                    // new components, either as inputs or outputs,
+                    // or components removed from ALL/ALLSMALLER inputs
+                    pendingCallbacks = updateChildPaths(
+                        dispatch,
+                        getState,
+                        pendingCallbacks,
+                        parsedId,
+                        appliedProps.children,
+                        oldChildren
+                    );
+                }
+
+                // persistence edge case: if you explicitly update the
+                // persistence key, other props may change that require us
+                // to fire additional callbacks
+                const addedProps = pickBy(
+                    (v, k) => !(k in props),
+                    appliedProps
+                );
+                if (!isEmpty(addedProps)) {
+                    const {graphs, paths} = getState();
+                    pendingCallbacks = includeObservers(
+                        id,
+                        addedProps,
+                        graphs,
+                        paths,
+                        pendingCallbacks
+                    );
+                }
+            }
+        });
+        const resolvedId = combineIdAndProp({id: id, property: 'children'});
+        const newPending = removePendingCallback(
+            pendingCallbacks,
+            getState().paths,
+            resolvedId,
+            []
+        );
+        dispatch(startCallbacks(newPending));
+    }
 }
 
 

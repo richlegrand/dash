@@ -1219,7 +1219,8 @@ export function getCallbacksInLayout(graphs, paths, layoutChunk, opts) {
                     callbacks[foundIndex].changedPropIds,
                     callback.changedPropIds
                 );
-            } else if ((callback.callback.service&services.NO_CLIENT_INITIAL_CALLBACK)===0) {
+            } else if ((callback.callback.service&services.NO_CLIENT_INITIAL_CALLBACK)===0 && 
+                !callback.resolvedId.startsWith('_none')) {
                 foundCbIds[callback.resolvedId] = callbacks.length;
                 callbacks.push(callback);
             }
