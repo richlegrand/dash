@@ -443,7 +443,7 @@ class Dash(object):
                 try: # Handle races with push_mods.
                     comp = self.layout_components[id_]
                     setattr(comp, prop, val)
-                except:
+                except KeyError:
                     pass
 
 
@@ -1367,7 +1367,7 @@ class Dash(object):
 
         # Find all shared callbacks that haven't been called
         callback_ids = []
-        valid_ids= self._valid_callback_ids(service_test)
+        valid_ids = self._valid_callback_ids(service_test)
         for output in valid_ids:
             callback = self.callback_map[output]
             if service_test(callback["service"]) and "args" not in callback:

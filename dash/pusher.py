@@ -6,6 +6,7 @@ from contextvars import ContextVar
 import time
 import sys
 import inspect
+import traceback 
 
 context_rcount = ContextVar('context_rcount')
 
@@ -50,6 +51,7 @@ class Alock:
     async def __aexit__(self, exc_type, exc_value, traceback):
         self.release()
 
+
 class Client(object):
     def __init__(self):
         self.served_layout = False
@@ -63,9 +65,12 @@ class Client(object):
         return "<Client: address={}, host={}, authentication={}>".format(
             self.address, self.host, self.authentication)
 
+
 def exception_handler(loop, context):
-    task = context['future']
-    task.print_stack()
+    if 'future' in context:
+        task = context['future']
+        task.print_stack()
+
 
 class Pusher(object):
 
@@ -80,30 +85,38 @@ class Pusher(object):
         @self.server.websocket('/_push')
         async def update_component_socket():
             print('**** spawning')
-            # Quart creates the event loop.  This is the best place to grab it (I think).
-            if self.loop is None:
-                self.loop = asyncio.get_event_loop()
-                self.loop.set_exception_handler(exception_handler)
-
-            tasks = []
-            client = Client()
-            self.clients.append(client)
-
-            if self.connect_callback is not None:
-                tasks.append(asyncio.create_task(self.call_connect_callback(client, True)))
-
-            tasks.append(asyncio.create_task(quart.copy_current_websocket_context(self.socket_sender)(client)))
-            tasks.append(asyncio.create_task(quart.copy_current_websocket_context(self.socket_receiver)(client)))
-
             try:
-                await asyncio.gather(*tasks)
-            finally:
-                self.clients.remove(client)
+                # Quart creates the event loop.  This is the best place to grab it (I think).
+                if self.loop is None:
+                    self.loop = asyncio.get_event_loop()
+                    self.loop.set_exception_handler(exception_handler)
+
+                tasks = []
+                client = Client()
+                self.clients.append(client)
 
                 if self.connect_callback is not None:
-                    await asyncio.create_task(self.call_connect_callback(client, False))
-                print('*** exitting')
+                    tasks.append(asyncio.create_task(self.call_connect_callback(client, True)))
 
+                tasks.append(asyncio.create_task(quart.copy_current_websocket_context(self.socket_sender)(client)))
+                tasks.append(asyncio.create_task(quart.copy_current_websocket_context(self.socket_receiver)(client)))
+
+                await asyncio.gather(*tasks)
+
+            except asyncio.CancelledError:
+                pass
+            except:
+                # Print traceback because Quart seems to be catching everything in this context.
+                traceback.print_exc() 
+            finally:
+                self.clients.remove(client)
+                if self.connect_callback is not None:
+                    try:
+                        await self.call_connect_callback(client, False)
+                    except:
+                        # Print traceback because Quart seems to be catching everything in this context.
+                        traceback.print_exc()
+                print('*** exitting')
 
     async def call_connect_callback(self, client, connect):
         if inspect.iscoroutinefunction(self.connect_callback):
@@ -111,38 +124,25 @@ class Pusher(object):
         else:
             await self.loop.run_in_executor(None, self.connect_callback, client, connect) 
 
-
     async def socket_receiver(self, client):
-        print('*** ws receive')
-        try:
-            while True:
-                data = await quart.websocket.receive()
-                data = json.loads(data);
-                # Create new task so we can handle more messages and keep things snappy.
-                asyncio.create_task(quart.copy_current_websocket_context(self.dispatch)(data, client))
-        except asyncio.CancelledError:
-            pass
-        print("*** ws receive exit")
-
+        while True:
+            data = await quart.websocket.receive()
+            data = json.loads(data);
+            # Create new task so we can handle more messages and keep things snappy.
+            asyncio.create_task(quart.copy_current_websocket_context(self.dispatch)(data, client))
 
     async def socket_sender(self, client):
-        print('*** ws send')
-        try:
-            while True:
-                mod = await client.send_queue.get()
-                json_ = json.dumps(mod, cls=plotly.utils.PlotlyJSONEncoder)
-                await quart.websocket.send(json_)
-        except asyncio.CancelledError:
-            pass
-        print("*** ws send exit")
-
+        while True:
+            mod = await client.send_queue.get()
+            json_ = json.dumps(mod, cls=plotly.utils.PlotlyJSONEncoder)
+            await quart.websocket.send(json_)
 
     async def dispatch(self, data, client):
         index = data['url']
         if index.startswith('/'):
             index = index[1:]
 
-        print('*** url', index, data['id'], data['data'])
+        #print('*** url', index, data['id'], data['data'])
         func = self.url_map[index]
         await func(data['data'], client, data['id'])
 
