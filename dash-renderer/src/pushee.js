@@ -13,7 +13,7 @@ const pushee = {
 
     checkSocket: function() {
         if (pushee.socket===null) {
-            console.log('open socket');
+            //console.log('open socket');
             const url = 'ws://' + document.domain + ':' + location.port + '/_push';
             pushee.socket = new WebSocket(url);
             pushee.socket.onmessage = pushee.receive;
@@ -23,6 +23,7 @@ const pushee = {
     },
 
     checkPending: function() {
+        // Prevent unbounded growth of pending list.  
         if (Object.keys(pushee.pending).length>50) {
             let min = Number.MAX_SAFE_INTEGER;
             let max = 0;
@@ -79,7 +80,7 @@ const pushee = {
     },
 
 	close: function(event) {
-		console.log('close socket');
+		//console.log('close socket');
 		pushee.socket = null;
         pushee.sendQueue = [];
         pushee.pending = {}; 
@@ -97,8 +98,8 @@ const pushee = {
                 const val = data[id];
             	pushee.setProps[id](val, notify, 'children' in val);
             }
-            else
-            	console.log('cannot find ' + id);
+            //else
+            //	console.log('cannot find ' + id);
         }
     },
 };

@@ -84,7 +84,7 @@ class Pusher(object):
         # websocket connection handler 
         @self.server.websocket('/_push')
         async def update_component_socket():
-            print('**** spawning')
+            #print('**** spawning')
             try:
                 # Quart creates the event loop.  This is the best place to grab it (I think).
                 if self.loop is None:
@@ -116,7 +116,7 @@ class Pusher(object):
                     except:
                         # Print traceback because Quart seems to be catching everything in this context.
                         traceback.print_exc()
-                print('*** exitting')
+                #print('*** exitting')
 
     async def call_connect_callback(self, client, connect):
         if inspect.iscoroutinefunction(self.connect_callback):

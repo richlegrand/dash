@@ -808,9 +808,13 @@ class Dash(object):
             package.__path__,
         )
 
-        response = quart.Response(
-            pkgutil.get_data(package_name, path_in_pkg), mimetype=mimetype
-        )
+        # For development: check local directory for resource first.
+        try:
+            path = os.path.join(os.path.dirname(__file__), path_in_pkg)
+            data = open(path, 'rb').read()    
+        except FileNotFoundError:
+            data = pkgutil.get_data(package_name, path_in_pkg)
+        response = quart.Response(data, mimetype=mimetype)
 
         if has_fingerprint:
             # Fingerprinted resources are good forever (1 year)
@@ -1207,7 +1211,7 @@ class Dash(object):
                     id_, prop = cpi.split(".")
                     input_mods[id_][prop] = find_prop_value(body["inputs"], id_, prop)
                     if service&Services.SHARE_WITH_OTHER_CLIENTS:
-                        print("send input mods", input_mods, client)
+                        #print("send input mods", input_mods, client)
                         await self.share_shared_mods(input_mods, client)
 
             # Call callback.
@@ -1236,7 +1240,7 @@ class Dash(object):
                 output_mods = response["response"]
                 outputs = mods_to_list(output_mods)
                 if service&Services.SHARE_WITH_OTHER_CLIENTS:
-                    print("send output mods", output_mods)
+                    #print("send output mods", output_mods)
                     await self.share_shared_mods(output_mods)
                 callback_ids, x_list = await self._dispatch_chain(outputs)
                 if x_list:
@@ -1325,7 +1329,7 @@ class Dash(object):
         body["outputs"] = callback["outputs"][0].copy() if len(callback["outputs"])==1 else deepcopy(callback["outputs"]) 
         if len(body["outputs"])==1:
             body["outputs"] = body["outputs"]
-        print("**** body", body)
+        #print("**** body", body)
         return body
 
     # This method can only apply to shared callbacks.
@@ -1383,7 +1387,6 @@ class Dash(object):
                         all_callback_ids.add(output)
 
         while all_callback_ids:
-            print("all_callback_ids start", all_callback_ids)
             # Assemble a list of all outputs from all_callback_ids
             outputs = []
             for output in all_callback_ids:
@@ -1400,7 +1403,6 @@ class Dash(object):
             discards = [output for output in all_callback_ids if "args" in self.callback_map[output]]
             for discard in discards:
                 all_callback_ids.discard(discard)
-            print("all_callback_ids end", all_callback_ids)
 
 
     def _setup_server(self):

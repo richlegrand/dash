@@ -251,6 +251,7 @@ def runcoro(coro):
     except StopIteration as e:
         return e.value
 
+
 def list_to_mods(list_):
     mods = collections.defaultdict(dict)
     for i in list_:
