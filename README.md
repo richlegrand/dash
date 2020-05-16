@@ -147,15 +147,15 @@ The Services class in [dash.py](dash/dash.py) makes it possible to customize a c
 
 ## Benchmarks 
 
-TLDR -- websockets are faster, about 5x faster than using HTTP requests for component updates.  That's the biggest takeaway here:  a Dash server that uses websockets for component updates is significantly faster.
+__TLDR -- websockets are faster, about 5x faster than using HTTP requests for component updates.__  That's the biggest takeaway here:  a Dash server that uses websockets for component updates is significantly faster.
 
 How long does it take for a client to send a component update and receive a response from the server?  This "round-trip" time or "server latency" captures an important performance metric for the server, and it's what we measured. 
 
 
-| Service           | Flask     | Quart w/no coroutine callback | Quart w/coroutine callback |
-| ----------------- | --------- | ----------------------------- | ---------------------------|
-| HTTP service      | __32 ms__ | 32 ms                         | 35 ms                      |
-| Websocket service | -         |  __6.5 ms__                   | __6 ms__                   |
+| Service           | Flask     | Quart with syncrhonous callback | Quart with coroutine callback |
+| ----------------- | --------- | ------------------------------- | ----------------------------- |
+| HTTP service      | __32 ms__ | 32 ms                           | 35 ms                         |
+| Websocket service | -         |  __6.5 ms__                     | __6 ms__                      |
  
 
 I haven't dug into this, but I'm guessing that websockets are faster because a given websocket connection is persistent.  The added overhead of opening and closing a connection makes HTTP requests significantly slower (my guess.)  Fetching resources is what HTTP is really good at.  Component updates are better-suited for websocket communication it seems. 
@@ -195,7 +195,7 @@ There is a more general issue of race conditions that arises when you mix HTTP r
 
 ## Notes about performance testing
 
-The tests were done by modifying dash_renderer -- inserting a timer in `handleServerside()`.  Start the timer before fetch, stop the timer when `data` is received, then take the time difference and insert into a running averager until the average sufficiently converges.  This usually happens after 100 or so measurements, but to keep things consistent I ran each test for 300 "clicks" (I would click on a slider object.)
+The tests were done by modifying dash_renderer -- inserting a timer in `handleServerside()`.  Start the timer before fetch, stop the timer when `data` is received, then take the time difference and insert into a running averager until the average sufficiently converges.  This usually happens after 100 or so measurements, but to keep things consistent I ran each test for 300 "clicks" (I would click on a slider object.)  The simple example is [here](timer.py) for reference.
 
 The timer code is [here](dash-renderer/src/timer.js).  For example, to insert into (unmodified) [index.js](dash-renderer/src/actions/index.js):
 
