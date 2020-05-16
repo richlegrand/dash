@@ -1,6 +1,6 @@
 # Dash for devices
 
-Hardware, or devices... something physical.  When you have [Dash](https://github.com/plotly/dash) interacting with a physical device things can [break](Problems we encountered with Dash).  Here’s an attempt to solve some of the problems that we encountered when using Dash with devices/hardware.  
+Hardware, or devices... something physical.  When you have [Dash](https://github.com/plotly/dash) interacting with a physical device things can [break](#problems-we-encountered-with-dash).  Here’s an attempt to solve some of the problems that we encountered when using Dash with devices/hardware.  
 
 Among other changes, we've introduced "shared" callbacks:
 
@@ -132,7 +132,7 @@ Asyncio has been really nice to work with.  For example, sending N messages to N
 
 We gave callbacks the option of being coroutines or regular routines.  Like the Flask implementation of Dash, regular routines execute in their own thread to keep things snappy.  Coroutines execute in their own asyncio task.  Giving callbacks this option probably contributed to the biggest changes to the server-side code.  We had to more or less rewrite the callback_context sections.  
 
-We haven't measured any noticeable performance improvement with Quart ([see below](Benchmarks).)  But we expect that Dash with Quart has better CPU scaling than with Flask.   
+We haven't measured any noticeable performance improvement with Quart ([see below](#benchmarks).)  But we expect that Dash with Quart has better CPU scaling than with Flask.   
 
 
 ### Other modes/services
@@ -152,17 +152,17 @@ TLDR -- websockets are faster, about 5x faster than using HTTP requests for comp
 How long does it take for a client to send a component update and receive a response from the server?  This "round-trip" time or "server latency" captures an important performance metric for the server, and it's what we measured. 
 
 
-Service | Flask | Quart w/no coroutine callback | Quart w/coroutine callback
---- | --- | --- |
-HTTP service | __32 ms__ | 32 ms | 35 ms
-Websocket service | - |  __6.5 ms__ | __6 ms__
-
+| Service           | Flask     | Quart w/no coroutine callback | Quart w/coroutine callback |
+| ----------------- | --------- | ----------------------------- | ---------------------------|
+| HTTP service      | __32 ms__ | 32 ms                         | 35 ms                      |
+| Websocket service | -         |  __6.5 ms__                   | __6 ms__                   |
+ 
 
 I haven't dug into this, but I'm guessing that websockets are faster because a given websocket connection is persistent.  The added overhead of opening and closing a connection makes HTTP requests significantly slower (my guess.)  Fetching resources is what HTTP is really good at.  Component updates are better-suited for websocket communication it seems. 
 
 I was expecting to see Quart and asyncio add a small improvement in performance.  The measurements didn't show this.  I should note that there were a few milliseconds of noise in the numbers, especially the HTTP service measurements.  Any improvements from Quart/asyncio were "in the noise" so to speak.  I would expect that Quart/asyncio would have better CPU scaling than Flask.  This could potentially be another good test.  
 
-See [notes below](Notes about performance testing) for more information about implementation, etc.
+See [notes below](#notes-about-performance-testing) for more information about implementation, etc.
 
 
 ## Problems we encountered with Dash
