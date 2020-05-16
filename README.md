@@ -15,26 +15,29 @@ Download the [tarfile](https://github.com/charmedlabs/vizy/files/4636133/dash_de
 1.  Untar, uncompress the tar file.
 2.  Go into `dash` directory and run one the examples (e.g. `python3 example1.py`).  It assumes that you have a recent version of Dash already installed.  (Note, running the examples in this directory won't modify your existing Dash installation.)
 3.  Point your browser to `localhost:5000`. 
+4.  Repeat (3) with another browser tab.  
 
 ## Background
 
 We had planned to crowdfund a [Raspberry Pi-based AI camera](https://www.vizycam.com/), but COVID happened and we hit pause on the launch.  So I used some of my new free time to work on this.  Disclaimer: I'm not an expert in this space -- my main qualification is that I have a good amount of firsthand experience using Dash and Flask with devices/hardware.  And I’m a big fan of Dash.
 
-Dash was designed (I'm paraphrasing) to give non-expert programmers the ability to make beautiful and informative dashboards.  Along those lines, I wanted make it easier for the Raspberry Pi/maker community to put their physical hardware creations/ideas online for anyone to interact with.  Dash can do this out of the box, but the required workarounds can be a bummer...  I also wanted our product work better.
+Dash was designed (I'm paraphrasing) to give non-expert programmers the ability to make beautiful and informative dashboards.  Along those lines, I wanted make it easier for the Raspberry Pi/maker community to put their physical hardware creations/ideas online for anyone to interact with.  Dash can do this out of the box, but the required workarounds can be a bummer...  I also wanted to make our product work better and be easier to program.
 
 
 ![Vizy in Motionscope mode](https://user-images.githubusercontent.com/913165/82081637-471f5b00-96ac-11ea-9649-31bf2893512f.gif)
 
 
-## Our changes to Dash
+## Our additions to Dash
 
 ### Shared callbacks
 
 We added `callback_shared()`.  For example:
 
 ```python
+# Share slider value with all clients
 @app.callback_shared(Output('slider_output', 'children'), [Input('slider', 'value')])
 def func(value):
+    # ... interact with hardware/device(?)
     return value
 ```
 
@@ -43,16 +46,34 @@ Declaring a callback as shared does several things:
 1. The outputs/updates are shared with all clients.
 2. The callback routine is threadsafe/serialized.
 3. The callback routine is called upon server initialization, not upon client initialization.
-4. The updates happen over websocket instead of HTTP requests.
+4. Updates happen over websocket instead of HTTP requests.
 
 Shared callbacks are useful when you want to interact with a device.  See [example1.py](example1.py) and [example1a.py](example1a.py). 
 
 
 ### Client awareness
 
-Websockets create an active connection between the server and the client.  The connection exists as long the browser tab is present in the browser.  It allows us to maintain a table of active clients.  Your dash app can access the table of active clients in dash.clients (usually app.clients).  Inside the table each client has a connection time, ip address, hostname and authentication value.  See [example3.py](example3.py) and [example3a.py](example3a.py).  Since a given client has a `__dict__` attribute, you can also add whatever fields you want.  
+#### app.clients 
 
-Additionally, we added a `client` field to the `dash.callback_context`.  This is accessed within a callback (see [example3a.py](example3a.py).)  The `client` field is the requesting client, so the callback can do something different based on the client's authentication or some other criteria.
+Websockets create an active connection between the server and the client.  The connection exists as long the browser tab is present in the browser.  It allows us to maintain a table of active clients.  Your dash app can access the table of active clients in `app.clients`.  Inside the table each client has a connection time, ip address, hostname and authentication value.  See [example3.py](example3.py) and [example3a.py](example3a.py).  Since a given client has a `__dict__` attribute, you can also add whatever fields you want.  
+
+#### client field in callback_context
+
+We added a `client` field to the `dash.callback_context`.  This is accessed within a callback (see [example3a.py](example3a.py).)  The `client` field is the requesting client, so the callback can do something different based on the client's authentication or some other criteria.
+
+#### callback_connect
+
+We also added `callback_connect` for the server to communicate when a client connection changes. 
+
+```python
+@app.callback_connect
+def func(client, connect):
+    print(client, connect, len(app.clients))    
+```
+
+The `client` argument is the client whose connection status has changed.  The  `connect` argument is either `True` for the client arriving or `False` for the client leaving.  The function provided to `callback_connect` can be a coroutine. 
+
+See [example2.py](example2.py), [example2a.py](examplesa.py), [example3.py](example3.py), and [example3a.py](example3a.py).
 
 
 ### push_mods()
@@ -83,16 +104,17 @@ app.push_mods({
 See [example2.py](example2.py) and [example2a.py](example2a.py).
 
 
-### _No output_ option for callbacks
+### "No output" option for callbacks
 
 Dash requires that each callback have at least one output.  But sometimes you just want a callback (no output wanted/needed.)  For example, a button to take a picture.  Here, the callback to the button exists to take the picture and store it somewhere (a side-effect), not (typically) to inject another piece of data into the layout. 
 
 For example:
 
 ```python
-@app.callback_shared(None, [Input('slider', 'value')])
+@app.callback_shared(None, [Input('slider', 'value')]) # specfiy None for output
 def func(value):
     print('Slider:', value)
+    # return nothing
 ```
 
 See [example1a.py](example1a.py).
@@ -107,7 +129,7 @@ Sometimes you don't want to be restricted to just one given output (or set of ou
 For example, to return an alternate result (or set of results):
 
 ```python
-@app.callback(Output('content', 'children', [Input('submit', 'n_clicks')], 
+@app.callback(Output('content', 'children'), [Input('submit', 'n_clicks')], 
     [State('username', 'value'), State('password', 'value')])
 def func(submit, username, password):
     if username=='username' and password=='password':
@@ -119,7 +141,7 @@ def func(submit, username, password):
 
 See [example3.py](example3.py).
 
-The upshot here is to use an `Output` object (or objects) to return the alternate result.  (Note, the third argument to `Output` is something we added -- it's optional, but required here to specifiy the value of the `Output`.) 
+The upshot here is to use an `Output` object (or objects) to return the alternate result.  (Note, the third argument to `Output` is something we added -- it's optional, but required here to specifiy the value of the given `Output`.) 
 
 This works with shared callbacks also.  
 
@@ -128,7 +150,7 @@ This works with shared callbacks also.
 
 We use [Quart](https://pgjones.gitlab.io/quart/) instead of Flask.  Quart is a really nice asyncio implementation of Flask.  Quart is typically faster than Flask, but we chose it also because it has built-in websocket facilities.  Flask works well with Flask-SocketIO (of course), but it requires that you monkey-patch the Python standard library.  This can break things.  For example, we found that monkey-patching breaks Google's Oauth 2.0 library.  Asyncio seemed like a better path forward than gevent (what Flask typically uses and the main reason behind monkey-patching.)  And asyncio has been really nice to work with.  For example, sending N messages to N clients is what asyncio is really good at.  Quart requires Python 3.7 or higher though. 
 
-We gave callbacks the option of being coroutines or regular routines.  Like the Flask implementation of Dash, regular routines execute in their own thread to keep things snappy.  Coroutines execute in their own asyncio task.  Giving callbacks this option probably contributed to the biggest changes to the server-side code.  We had to more or less rewrite the callback_context sections.  
+We gave callbacks the option of being coroutines (async) or synchronous routines.  Like the Flask implementation of Dash, regular routines execute in their own thread to keep things snappy.  Coroutines execute in their own asyncio task.  Giving callbacks this option probably contributed to the biggest changes to the server-side code.  The callback_context code need significant refactoring.  
 
 We haven't measured any noticeable performance improvement with Quart ([see below](#benchmarks).)  But we expect that Dash with Quart has better CPU scaling than with Flask.   
 
@@ -145,7 +167,7 @@ The Services class in [dash.py](dash/dash.py) makes it possible to customize a c
 
 ## Benchmarks 
 
-__TLDR: websockets are faster__, about 5x faster than using HTTP requests for component updates.  That's the biggest takeaway here -- a Dash server that uses websockets for component updates is significantly faster.
+__TLDR: websockets are faster__, about 5x faster than using HTTP requests for component updates.  That's the biggest takeaway here and probably deserves more emphasis -- a Dash server that uses websockets for component updates is significantly faster.
 
 How long does it take for a client to send a component update and receive a response from the server?  This "round-trip" time or "server latency" captures an important performance metric for the server, and it's what we measured. 
 
@@ -158,7 +180,7 @@ How long does it take for a client to send a component update and receive a resp
 
 Flask with HTTP service is what Dash uses normally.  I haven't dug into this, but I'm guessing that websockets are faster because a given websocket connection is persistent.  The added overhead of opening and closing a connection makes HTTP requests significantly slower (my best guess.)  Fetching resources is what HTTP is really good at.  Component updates are better-suited for websocket communication it seems. 
 
-I was expecting to see Quart and asyncio add a small improvement in performance.  The measurements didn't show this.  I should note that there were a few milliseconds of noise in the numbers, especially the HTTP service measurements.  Any improvements from Quart/asyncio were "in the noise" so to speak.  I would expect that Quart/asyncio would have better CPU scaling than Flask.  This might be another good test to consider.  
+I was expecting to see Quart and asyncio add a small improvement in performance.  The measurements didn't show this though.  I should note that there were a few milliseconds of noise in the numbers, especially the HTTP service measurements.  Any improvements from Quart/asyncio were "in the noise" so to speak.  I would expect that Quart/asyncio would have better CPU scaling than Flask (another test to consider?)  
 
 See the [notes below](#notes-about-performance-testing) for more information about implementation, etc.
 
@@ -172,14 +194,16 @@ The root of the problem is that devices make the Dash server _state-ful_.  Dash'
 1.  You want to communicate the state to the client(s).  In general, the state can change both because of client interactions and independent of client interactions.    
 2.  You want the client(s) to modify/affect the state.
 
-(1) can be challenging because there’s no push mechanism.  We’ve [played with adding a websocket](https://community.plotly.com/t/triggering-callback-from-within-python/23321/6) and that has worked reasonably well as long as there’s a single client.  (2) isn’t a problem as long as there’s a single client.
+(1) can be challenging because there’s no push mechanism.  We’ve played with [adding (hacking) a websocket to Dash before](https://community.plotly.com/t/triggering-callback-from-within-python/23321/6) and that has worked reasonably well as long as there’s a single client.  (2) isn’t a problem as long as there’s a single client.
 
-So a single client sounds like it might be a reasonable solution -- but enforcing this restriction can be challenging, and multiple clients/users/connections are usually a desirable feature.  We think shared callbacks are a reasonable solution.  The state changes are distributed to clients automatically, and clients can safely modify the state.  
+So enforcing a single client sounds like it might be a reasonable solution.  This restriction can be challenging to enforce though, and multiple clients/users/connections are usually a desirable feature.  
+
+Shared callbacks seem (to us) like a reasonable solution.  The state changes are distributed to clients automatically, and clients can safely modify the state.  
 
 
 ### Issues with HTTP requests and ordering 
 
-One of the first problems we noticed with Dash was that the brightness slider on our camera would act flakey -- the brightness slider would be at 100% but the camera would only be 87% brightness because the most recent callback was 87%.  The reason for this: each slider update from the client is sent as a separate HTTP request, and the receive order, while usually correct, sometimes isn't -- the 100% message might be received before the 87% message.  This is the nature of HTTP requests.  It isn’t a problem within the normal Dash scheme of things, it’s only a problem when the server needs messages to be delivered in order (e.g. when you are interacting with a device.)
+One of the first problems we noticed with Dash was that the brightness slider on our camera would act flakey -- the brightness slider would be at 100% but the camera would only be 87% brightness because the most recent callback was 87%.  The reason for this: each slider update from the client is sent as a separate HTTP request, and the receive order, while usually correct, sometimes isn't -- the 100% message might be received _before_ the 87% message.  This is the nature of HTTP requests.  It isn’t a problem within the normal Dash scheme of things, it’s only a problem when the server needs messages to be delivered in order (e.g. when you are interacting with a device.)
 
 The issue is fixed by using a websocket to send component updates.  The websocket guarantees ordering, and it's faster -- see [benchmarks](#benchmarks).
 
