@@ -446,14 +446,14 @@ function handleServerside(config, payload, hooks, service) {
     if (hooks.request_pre !== null) {
         hooks.request_pre(payload);
     }
-    //const timer = startTimer();
+    const timer = startTimer();
     const p = serverInteract(config, payload, service);
 
     if (!(p instanceof Promise))
         return p;
 
     return p.then(data => {
-        //stopTimer(timer);
+        stopTimer(timer);
         const {multi, response} = data;
         if (response===undefined)
             return {};

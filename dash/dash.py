@@ -16,7 +16,6 @@ from functools import wraps
 
 import quart
 from quart_compress import Compress
-from asgiref.sync import sync_to_async
 import asyncio
 import inspect
 from werkzeug.debug.tbtools import get_current_traceback
