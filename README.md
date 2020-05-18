@@ -10,12 +10,15 @@ Here, the shared slider and shared text box are shared across all clients, which
 
 When a component is shared, the property changes to that component are pushed to all clients by the Dash server over WebSocket(s).  Each client gets a logically consistent and intentional display of the state of the system, device, or shared resource.  
 
-Download the [tarfile](https://github.com/charmedlabs/vizy/files/4636133/dash_devices.tar.gz) to give it a try:
+Download the [tarfile](https://github.com/charmedlabs/vizy/files/4645040/dash-devices.tar.gz) to give it a try:
 
-1.  Uncompress and untar.
-2.  Go into `dash` directory and run one the examples (e.g. `python3 example1.py`).  It assumes that you have a recent version of Dash already installed.  (Note, running the examples in this directory won't modify your existing Dash installation.)
-3.  Point your browser to `localhost:5000`. 
-4.  Repeat (3) with another browser tab.  
+1.  Install quart and quart_compress:
+`pip3 install quart`
+`pip3 install quart_compress`
+2.  Uncompress and untar dash-devices.tar.gz.
+3.  Go into `dash-devices` directory and run one the examples (e.g. `python3 example1.py`).  It assumes that you have a recent version of Dash already installed.  (Note, running the examples in this directory won't modify your existing Dash installation.)
+4.  Point your browser to `localhost:5000`. 
+5.  Repeat (4) with another browser tab.  
 
 
 ## Background
@@ -169,7 +172,7 @@ Shared callbacks assume that you have a single resource that you want to share. 
 
 We created the "S2" service with this in mind.  By using the client field in the callback_context a given callback can provide a device-specific view for a given client.  
 
-The Services class in [dash.py](dash/dash.py) makes it possible to customize a callback service that better meets your needs.  The custom service can be passed into `callback()`. 
+The `Services` class in [dash.py](dash/dash.py) makes it fairly easy to customize a callback service that better meets your needs.  The custom service can be passed into `callback()`. 
 
 
 ## Benchmarks 
@@ -224,7 +227,7 @@ For shared callbacks, "serialization" can be disabled in the "service" argument 
 
 ### Race conditions
 
-There is a more general issue of race conditions that arises when you mix HTTP requests with WebSocket communication.  So we made all communication (graph upload, dependencies and component updates) happen over WebSocket by default, but this is can be set as a config option (`server_service`).   With all component-related communcation happening over WebSocket, messages are delivered in order, and the odd race condition is avoided. 
+There is a more general issue of race conditions that arises when you mix HTTP requests with WebSocket communication.  So we made all communication (graph upload, dependencies and component updates) happen over WebSocket by default, but this is can be set as a config option (via `server_service`).   With all component-related communcation happening over WebSocket, messages are delivered in order, and the odd race condition is avoided. 
 
 
 ## Notes about benchmark testing
