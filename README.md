@@ -220,14 +220,14 @@ The issue is fixed by using a WebSocket to send component updates.  The WebSocke
 
 ### Thread safety and callbacks 
 
-Each Dash callback is executed in a separate thread.  This keeps the Dash server snappy:  it doesn't wait for a given callback to complete.  But when you have a shared resource being accessed in the callback (e.g. a device) the callback code is typically no longer threadsafe.  So we added a lock to each shared callback.  The WebSocket queue guarantees ordering and the lock guarantees serialization of shared callbacks.  This only applies to shared callbacks -- normal callbacks are unchanged.  
+Each Dash callback is executed in a separate thread.  This keeps the Dash server snappy:  it doesn't wait for a given callback to complete.  But when you have a shared resource being accessed in the callback (e.g. a device) the callback code is typically no longer threadsafe.  So we added a lock to each shared callback.  The WebSocket queue guarantees ordering and the lock guarantees serialization of shared callbacks.  This only applies to shared callbacks -- regular callbacks are unchanged.  
 
 For shared callbacks, "serialization" can be disabled in the "service" argument to `callback()`. 
 
 
 ### Race conditions
 
-There is a more general issue of race conditions that arises when you mix HTTP requests with WebSocket communication.  So we made all communication (graph upload, dependencies and component updates) happen over WebSocket by default, but this is can be set as a config option (via `server_service`).   With all component-related communcation happening over WebSocket, messages are delivered in order, and the odd race condition is avoided. 
+There is a more general issue of race conditions that arises when you mix HTTP requests with WebSocket communication.  So we made all communication (layout upload, dependencies and component updates) happen over WebSocket by default, but this is can be set as a config option (via `server_service`).   With all component-related communcation happening over WebSocket, messages are delivered in order, and the odd race condition is avoided. 
 
 
 ## Notes about benchmark testing
@@ -283,4 +283,4 @@ You can chain callbacks together in Dash -- the output of one callback is the in
 
 For shared callbacks, callbacks are initiated and chained together at the server.  The callbacks are called in order and the outputs are sent to the client(s) over WebSocket(s) in order.  Using this method, a slow network will result in a delayed propagation of the callback results to the client(s), but no significant delays in the execution of the callbacks.    
 
-The same can be done (I think) for unshared (regular) callbacks for a potential a speed-up.   
+The same can be done (I think) for non-shared (regular) callbacks for a potential a speed-up.   
