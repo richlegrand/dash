@@ -127,7 +127,7 @@ class Pusher(object):
     async def socket_receiver(self, client):
         while True:
             data = await quart.websocket.receive()
-            data = json.loads(data);
+            data = json.loads(data)
             # Create new task so we can handle more messages and keep things snappy.
             asyncio.create_task(quart.copy_current_websocket_context(self.dispatch)(data, client))
 
@@ -177,5 +177,5 @@ class Pusher(object):
         return result
 
     def callback_connect(self, func):
-        self.connect_callback = func;
+        self.connect_callback = func
 

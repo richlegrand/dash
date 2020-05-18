@@ -227,7 +227,7 @@ For shared callbacks, "serialization" can be disabled in the "service" argument 
 
 ### Race conditions
 
-There is a more general issue of race conditions that arises when you mix HTTP requests with WebSocket communication.  So we made all communication (layout upload, dependencies and component updates) happen over WebSocket by default, but this is can be set as a config option (via `server_service`).   With all component-related communcation happening over WebSocket, messages are delivered in order, and the odd race condition is avoided. 
+There is a more general issue of race conditions that arises when you mix HTTP requests with WebSocket communication.  So we made all communication (layout upload, dependencies and component updates) happen over WebSocket by default, but this can be set as a config option (via `server_service`).   With all component-related communcation happening over WebSocket, messages are delivered in order, and the odd race condition is avoided. 
 
 
 ## Notes about benchmark testing
