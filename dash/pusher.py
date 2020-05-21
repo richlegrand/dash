@@ -104,7 +104,7 @@ class Pusher(object):
                 await asyncio.gather(*tasks)
 
             except asyncio.CancelledError:
-                pass
+                raise
             except:
                 # Print traceback because Quart seems to be catching everything in this context.
                 traceback.print_exc() 

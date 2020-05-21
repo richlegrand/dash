@@ -10,7 +10,7 @@ Here, the shared slider and shared text box are shared across all clients, which
 
 When a component is shared, the property changes to that component are pushed to all clients by the Dash server over WebSocket(s).  Each client gets a logically consistent and intentional display of the state of the system, device, or shared resource.  
 
-Download the [tarfile](https://github.com/charmedlabs/vizy/files/4645040/dash-devices.tar.gz) to give it a try:
+Download the [tarfile](https://drive.google.com/file/d/1zhLvoX99Ur7cKVFOVECKVDn_Q_JzkUJI/view?usp=sharing) to give it a try:
 
 1.  Install quart and quart_compress:
 `pip3 install quart`
