@@ -1,7 +1,10 @@
-import {mergeDeepRight} from 'ramda';
+import {mergeDeepRight, once} from 'ramda';
 import {handleAsyncError, getCSRFHeader} from '../actions';
 import {urlBase} from './utils';
 import {pusheeRequest, services} from '../pushee'
+
+/* eslint-disable-next-line no-console */
+const logWarningOnce = once(console.warn);
 
 function GET(path, fetchConfig) {
     return fetch(
@@ -69,7 +72,9 @@ export default function apiThunk(endpoint, method, store, id, body) {
                             return json;
                         });
                     }
-                    return dispatch({
+                    logWarningOnce(
+                    'Response is missing header: content-type: application/json'
+                );return dispatch({
                         type: store,
                         payload: {
                             id,

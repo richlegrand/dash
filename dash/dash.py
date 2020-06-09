@@ -11,6 +11,7 @@ import pkgutil
 import threading
 import re
 import logging
+import mimetypes
 
 from functools import wraps
 
@@ -49,13 +50,16 @@ from ._utils import (
     list_to_mods,
     mods_to_list,
     flatten_layout,
-    intersect_ids, 
+    intersect_ids,
     find_prop_value,
 )
 from .dependencies import Output
 from .pusher import Pusher, Alock
 from . import _validate
 from . import _watch
+
+# Add explicit mapping for map files
+mimetypes.add_type("application/json", ".map", True)
 
 _default_index = """<!DOCTYPE html>
 <html>
@@ -113,11 +117,11 @@ g_cc = ContextVar("calling_context")
 class Services(object):
     # Service bits:
     # Update component over socket, opposite = http update
-    PUSHER_UPDATE = 1<<0 
+    PUSHER_UPDATE = 1<<0
     # Dependencies, layout and reload_hash requests over socket, opposite = http requests
-    PUSHER_OTHER = 1<<1  
-    # not supported for server_service, opposite = initial callback from each client    
-    NO_CLIENT_INITIAL_CALLBACK = 1<<2 
+    PUSHER_OTHER = 1<<1
+    # not supported for server_service, opposite = initial callback from each client
+    NO_CLIENT_INITIAL_CALLBACK = 1<<2
     # not supported for server_service, opposite = no initial callback on server side
     SERVER_INITIAL_CALLBACK = 1<<3
     # not supported for server_service, opposite = only requesting client gets update
@@ -129,7 +133,7 @@ class Services(object):
 
     # Callback services:
     # S0: normal dash service
-    S0 = 0 
+    S0 = 0
 
     # SHARED aka S1: all clients see the same thing, e.g. one device.
     SHARED = PUSHER_UPDATE + NO_CLIENT_INITIAL_CALLBACK + SHARED_CALLBACK + \
@@ -266,6 +270,15 @@ class Dash(object):
         env: ``DASH_SUPPRESS_CALLBACK_EXCEPTIONS``
     :type suppress_callback_exceptions: boolean
 
+    :param prevent_initial_callbacks: Default ``False``: Sets the default value
+        of ``prevent_initial_call`` for all callbacks added to the app.
+        Normally all callbacks are fired when the associated outputs are first
+        added to the page. You can disable this for individual callbacks by
+        setting ``prevent_initial_call`` in their definitions, or set it
+        ``True`` here in which case you must explicitly set it ``False`` for
+        those callbacks you wish to have an initial call. This setting has no
+        effect on triggering callbacks when their inputs change later on.
+
     :param show_undo_redo: Default ``False``, set to ``True`` to enable undo
         and redo buttons for stepping through the history of the app state.
     :type show_undo_redo: boolean
@@ -296,9 +309,10 @@ class Dash(object):
         external_scripts=None,
         external_stylesheets=None,
         suppress_callback_exceptions=None,
+        prevent_initial_callbacks=False,
         show_undo_redo=False,
         plugins=None,
-        server_service=Services.PUSHER_ALL, 
+        server_service=Services.PUSHER_ALL,
         callback_service=Services.S0,
         **obsolete
     ):
@@ -322,8 +336,8 @@ class Dash(object):
         mod = sys.modules.get(name)
         if mod is not None and hasattr(mod, "__file__"):
             root_path = os.path.dirname(os.path.abspath(mod.__file__))
-        else: 
-            root_path = os.getcwd() 
+        else:
+            root_path = os.getcwd()
         self.config = AttributeDict(
             name=name,
             assets_folder=os.path.join(
@@ -349,8 +363,9 @@ class Dash(object):
             suppress_callback_exceptions=get_combined_config(
                 "suppress_callback_exceptions", suppress_callback_exceptions, False
             ),
+            prevent_initial_callbacks=prevent_initial_callbacks,
             show_undo_redo=show_undo_redo,
-            server_service=server_service, 
+            server_service=server_service,
             callback_service=callback_service,
         )
         self.config.set_read_only(
@@ -403,7 +418,8 @@ class Dash(object):
         self.routes = []
 
         self._layout = None
-        self._cached_layout = None
+        self._layout_is_function = False
+        self.validation_layout = None
 
         self._setup_dev_tools()
         self._hot_reload = AttributeDict(
@@ -426,7 +442,7 @@ class Dash(object):
         if self.server is not None:
             self.init_app()
 
-    
+
     async def handle_layout(self, id_, prop, val):
         async with self.handle_layout_lock:
             if id_ is None or prop=="children":
@@ -478,12 +494,12 @@ class Dash(object):
             await self._dispatch_chain(props)
         else:
             # If we modify all clients, we should modify layout.
-            if client is None: 
+            if client is None:
                 await self.mod_layout(mods)
-            # If component isn't shared we modify with notification.  
+            # If component isn't shared we modify with notification.
             # If component doesn't have any callbacks we also modify with notification
             # (and subsequently don't get called back, which is correct behavior.)
-            result = await self.pusher.send("mod_n", mods, client) 
+            result = await self.pusher.send("mod_n", mods, client)
         return result
 
     # Note, client==None means all clients.
@@ -541,7 +557,7 @@ class Dash(object):
         self._add_url("_dash-layout", self.serve_layout, pusher_callback=pusher_other)
         self._add_url("_dash-dependencies", self.dependencies, pusher_callback=pusher_other)
         self._add_url("_dash-update-component", self.dispatch, ["POST"], True)
-        self._add_url("_reload-hash", self.serve_reload_hash, pusher_callback=pusher_other) 
+        self._add_url("_reload-hash", self.serve_reload_hash, pusher_callback=pusher_other)
         self._add_url("_favicon.ico", self._serve_default_favicon)
         self._add_url("", self.index)
 
@@ -567,18 +583,47 @@ class Dash(object):
         return self._layout
 
     def _layout_value(self):
-        if isinstance(self._layout, patch_collections_abc("Callable")):
-            self._cached_layout = self._layout()
-        else:
-            self._cached_layout = self._layout
-        # Index the layout
-        return self._cached_layout
+        return self._layout() if self._layout_is_function else self._layout
 
     @layout.setter
     def layout(self, value):
         _validate.validate_layout_type(value)
-        self._cached_layout = None
+        self._layout_is_function = isinstance(value, patch_collections_abc("Callable"))
         self._layout = value
+
+        # for using flask.has_request_context() to deliver a full layout for
+        # validation inside a layout function - track if a user might be doing this.
+        if (
+            self._layout_is_function
+            and not self.validation_layout
+            and not self.config.suppress_callback_exceptions
+        ):
+
+            def simple_clone(c, children=None):
+                cls = type(c)
+                # in Py3 we can use the __init__ signature to reduce to just
+                # required args and id; in Py2 this doesn't work so we just
+                # empty out children.
+                sig = getattr(cls.__init__, "__signature__", None)
+                props = {
+                    p: getattr(c, p)
+                    for p in c._prop_names  # pylint: disable=protected-access
+                    if hasattr(c, p)
+                    and (
+                        p == "id" or not sig or sig.parameters[p].default == c.REQUIRED
+                    )
+                }
+                if props.get("children", children):
+                    props["children"] = children or []
+                return cls(**props)
+
+            layout_value = self._layout_value()
+            _validate.validate_layout(value, layout_value)
+            self.validation_layout = simple_clone(
+                # pylint: disable=protected-access
+                layout_value,
+                [simple_clone(c) for c in layout_value._traverse_ids()],
+            )
 
     @property
     def index_string(self):
@@ -622,6 +667,9 @@ class Dash(object):
                 "interval": int(self._dev_tools.hot_reload_interval * 1000),
                 "max_retry": self._dev_tools.hot_reload_max_retry,
             }
+        if self.validation_layout and not self.config.suppress_callback_exceptions:
+            config["validation_layout"] = self.validation_layout
+
         return config
 
     async def serve_reload_hash(self, body=None, client=None, request_id=None):
@@ -757,7 +805,7 @@ class Dash(object):
 
     def _generate_config_html(self):
         return '<script id="_dash-config" type="application/json">{}</script>'.format(
-            json.dumps(self._config())
+            json.dumps(self._config(), cls=plotly.utils.PlotlyJSONEncoder)
         )
 
     def _generate_renderer(self):
@@ -790,13 +838,8 @@ class Dash(object):
 
         _validate.validate_js_path(self.registered_paths, package_name, path_in_pkg)
 
-        mimetype = (
-            {
-                "js": "application/javascript",
-                "css": "text/css",
-                "map": "application/json",
-            }
-        )[path_in_pkg.split(".")[-1]]
+        extension = "." + path_in_pkg.split(".")[-1]
+        mimetype = mimetypes.types_map.get(extension, "application/octet-stream")
 
         package = sys.modules[package_name]
         self.logger.debug(
@@ -810,7 +853,7 @@ class Dash(object):
         # For development: check local directory for resource first.
         try:
             path = os.path.join(os.path.dirname(__file__), path_in_pkg)
-            data = open(path, 'rb').read()    
+            data = open(path, 'rb').read()
         except FileNotFoundError:
             data = pkgutil.get_data(package_name, path_in_pkg)
         response = quart.Response(data, mimetype=mimetype)
@@ -942,7 +985,10 @@ class Dash(object):
         else:
             return quart.jsonify(self._callback_list)
 
-    def _insert_callback(self, output, inputs, state, service):
+    def _insert_callback(self, output, inputs, state, service, prevent_initial_call):
+        if prevent_initial_call is None:
+            prevent_initial_call = self.config.prevent_initial_callbacks
+
         _validate.validate_callback(output, inputs, state)
         callback_id = create_callback_id(output)
         callback_spec = {
@@ -951,6 +997,7 @@ class Dash(object):
             "state": [c.to_dict() for c in state],
             "service": service,
             "clientside_function": None,
+            "prevent_initial_call": prevent_initial_call,
         }
         self.callback_map[callback_id] = {
             "inputs": callback_spec["inputs"],
@@ -962,7 +1009,9 @@ class Dash(object):
 
         return callback_id
 
-    def clientside_callback(self, clientside_function, output, inputs, state=()):
+    def clientside_callback(
+        self, clientside_function, output, inputs, state=(), prevent_initial_call=None
+    ):
         """Create a callback that updates the output by calling a clientside
         (JavaScript) function instead of a Python function.
 
@@ -1022,8 +1071,12 @@ class Dash(object):
              Input('another-input', 'value')]
         )
         ```
+
+        The last, optional argument `prevent_initial_call` causes the callback
+        not to fire when its outputs are first added to the page. Defaults to
+        `False` unless `prevent_initial_callbacks=True` at the app level.
         """
-        self._insert_callback(output, inputs, state, Services.S0)
+        self._insert_callback(output, inputs, state, Services.S0, prevent_initial_call)
 
         # If JS source is explicitly given, create a namespace and function
         # name, then inject the code.
@@ -1063,7 +1116,19 @@ class Dash(object):
     def callback_s2(self, output, inputs, state=()):
         return self.callback(output, inputs, state, Services.S2)
 
-    def callback(self, output, inputs, state=(), service=None):
+    def callback(self, output, inputs, state=(), service=None, prevent_initial_call=None):
+        """
+        Normally used as a decorator, `@app.callback` provides a server-side
+        callback relating the values of one or more `output` items to one or
+        more `input` items which will trigger the callback when they change,
+        and optionally `state` items which provide additional information but
+        do not trigger the callback directly.
+
+        The last, optional argument `prevent_initial_call` causes the callback
+        not to fire when its outputs are first added to the page. Defaults to
+        `False` unless `prevent_initial_callbacks=True` at the app level.
+        """
+
         # if service isn't set, set to default callback service
         if service is None:
             service = self.config.callback_service
@@ -1071,15 +1136,15 @@ class Dash(object):
             output = Output("_none", str(self.none_output_count))
             self.none_output_count += 1
 
-        callback_id = self._insert_callback(output, inputs, state, service)
+        callback_id = self._insert_callback(output, inputs, state, service, prevent_initial_call)
         multi = isinstance(output, (list, tuple))
 
         def wrap_func(func):
             is_coro = inspect.iscoroutinefunction(func)
             @wraps(func)
             async def add_context(body, response, lock, client):
-                g = _Context()  
-                g_cc.set(g)          
+                g = _Context()
+                g_cc.set(g)
                 g.inputs_list = inputs = body.get("inputs", [])
                 g.states_list = state = body.get("state", [])
                 output = body["output"]
@@ -1094,7 +1159,7 @@ class Dash(object):
                 ]
                 g.dash_response = response # None if pusher request
                 g.client = client # None if http request
-                
+
                 args = inputs_to_vals(inputs) + inputs_to_vals(state)
 
                 # remember args for shared callbacks
@@ -1123,7 +1188,7 @@ class Dash(object):
                     raise PreventUpdate
                 # Single alternate result
                 elif isinstance(output_value, Output):
-                    component_ids = {output_value.component_id: 
+                    component_ids = {output_value.component_id:
                         {output_value.component_property: output_value.component_value}}
                     alt = True
                 # List of alternate results
@@ -1172,9 +1237,9 @@ class Dash(object):
             if is_coro:
                 lock = Alock() if service&Services.SERIALIZED_CALLBACK else None
             else:
-                lock = threading.Lock() if service&Services.SERIALIZED_CALLBACK else None 
+                lock = threading.Lock() if service&Services.SERIALIZED_CALLBACK else None
             self.callback_map[callback_id]["callback"] = add_context, is_coro, lock
-        
+
             return add_context
 
         return wrap_func
@@ -1189,22 +1254,22 @@ class Dash(object):
             # The callback isn't a coroutine, so we need to run in an executor.
             # Note, there is no easy way to have a wrapper return a coroutine or routine conditionally...
             # So func is always declared a coroutine and runcoro() allows us to run it
-            # (without any awaits -- it's only declared a coroutine) inside executor thread.  
-            return await loop.run_in_executor(None, runcoro, func(body, response, lock, client))  # %% callback invoked 
+            # (without any awaits -- it's only declared a coroutine) inside executor thread.
+            return await loop.run_in_executor(None, runcoro, func(body, response, lock, client))  # %% callback invoked
 
     # dispatch() and callback() are fairly complex because we're handling various cases:
     # Shared/unshared, coro/threaded, socket service/http service, alt response/regular response/no response.
     async def dispatch(self, body=None, client=None, request_id=None):
-        if body:        
+        if body:
             service = self.callback_map[body["output"]]["service"]
             shared = Services.shared_test(service)
-            # Client will only be set on first callback in chain.  We only want to 
+            # Client will only be set on first callback in chain.  We only want to
             # send changed props for first dispatch in chain.
             # We share input changes with other clients, but not originating client.
-            # Note, we could wait and merge input_mods with output_mods and send in 
-            # one combined message, but this way, we get the changes sent without the 
-            # latency of the callback. 
-            if client and shared: 
+            # Note, we could wait and merge input_mods with output_mods and send in
+            # one combined message, but this way, we get the changes sent without the
+            # latency of the callback.
+            if client and shared:
                 input_mods = collections.defaultdict(dict)
                 for cpi in body["changedPropIds"]:
                     id_, prop = cpi.split(".")
@@ -1226,13 +1291,13 @@ class Dash(object):
                     # Prevent notifications caused by update/setProps at client
                     await self.pusher.respond({}, request_id)
                 else:
-                    if alt: 
+                    if alt:
                         # If not shared and alt result, we need to return empty result and push alt
                         # result so the right callbacks are called.
                         await self.pusher.respond({}, request_id)
                         await self.push_mods_coro(response["response"], client)
                     else:
-                        await self.pusher.respond(response, request_id) 
+                        await self.pusher.respond(response, request_id)
 
             # Share changed props and outputs with all clients if it's a shared callback.
             if shared:
@@ -1243,13 +1308,13 @@ class Dash(object):
                     await self.share_shared_mods(output_mods)
                 callback_ids, x_list = await self._dispatch_chain(outputs)
                 if x_list:
-                    raise Exception("{} callback(s) are part of shared callback chain, but are not shared.".format(x_list))   
+                    raise Exception("{} callback(s) are part of shared callback chain, but are not shared.".format(x_list))
         else:
             body = await quart.request.get_json()
             response = quart.Response(None, mimetype="application/json")
             json_output, output, alt = await self.call_callback(body, response, None)
             if alt:
-                raise Exception("Cannot return alternative results with server_service not set to PUSHER_ALL.")            
+                raise Exception("Cannot return alternative results with server_service not set to PUSHER_ALL.")
             response.set_data(json_output)
             return response
 
@@ -1259,7 +1324,7 @@ class Dash(object):
     @property
     def clients(self):
         return self.pusher.clients
-    
+
 
     def _valid_callback_ids(self, service_test):
         valid = []
@@ -1267,7 +1332,7 @@ class Dash(object):
             try:
                 if not service_test(callback["service"]):
                     raise Exception
-                for i in callback["inputs"] + callback["outputs"]:  
+                for i in callback["inputs"] + callback["outputs"]:
                     if i["id"] not in self.layout_components:
                         raise Exception
                 valid.append(output)
@@ -1292,16 +1357,16 @@ class Dash(object):
         return callbacks, x_callbacks
 
     def _callback_intersect(self, props, service_test, callback_ids=None):
-        return self._callback_compare(props, service_test, 
+        return self._callback_compare(props, service_test,
             lambda i : intersect_ids(i, props), callback_ids)
 
     def _callback_diff(self, props, service_test, callback_ids=None):
-        return self._callback_compare(props, service_test, 
+        return self._callback_compare(props, service_test,
             lambda i : not intersect_ids(i, props), callback_ids)
 
     # This method can only apply to shared callbacks.
     def _callback_body(self, output, inputs):
-        # callback body consists of: 
+        # callback body consists of:
         # {'output': _, 'outputs': [], 'inputs': [], 'changedPropIds': [], 'state': []}
         callback = self.callback_map[output]
         if "args" in callback:
@@ -1311,7 +1376,7 @@ class Dash(object):
             for i in inputs_:
                 comp = self.layout_components[i["id"]]
                 i["value"] = getattr(comp, i["property"], None)
-            state = deepcopy(callback["state"])    
+            state = deepcopy(callback["state"])
             for s in state:
                 comp = self.layout_components[s["id"]]
                 s["value"] = getattr(comp, s["property"], None)
@@ -1325,14 +1390,14 @@ class Dash(object):
                     changedPropIds.append(i["id"] + "." + i["property"])
         body["changedPropIds"] = changedPropIds
         body["output"] = output
-        body["outputs"] = callback["outputs"][0].copy() if len(callback["outputs"])==1 else deepcopy(callback["outputs"]) 
+        body["outputs"] = callback["outputs"][0].copy() if len(callback["outputs"])==1 else deepcopy(callback["outputs"])
         if len(body["outputs"])==1:
             body["outputs"] = body["outputs"]
         #print("**** body", body)
         return body
 
     # This method can only apply to shared callbacks.
-    # Call all callbacks, return results in a list [{'id': _, 'property': _, 'value': _}, ...]. 
+    # Call all callbacks, return results in a list [{'id': _, 'property': _, 'value': _}, ...].
     async def _dispatch_callbacks(self, bodies):
         tasks = []
         # If there are multiple callbacks, run in parallel.
@@ -1350,14 +1415,14 @@ class Dash(object):
         bodies = []
         callback_ids, x_list = self._callback_intersect(props, Services.shared_test)
         for output in callback_ids:
-            bodies.append(self._callback_body(output, props)) 
+            bodies.append(self._callback_body(output, props))
         await self._dispatch_callbacks(bodies)
         return callback_ids, x_list
 
 
     async def _initial_callbacks(self, comps):
         if self.shared_callbacks_called:
-            return 
+            return
         service_bits = Services.SERVER_INITIAL_CALLBACK + Services.SHARED_CALLBACK
         service_test = lambda service : (service&service_bits)==service_bits
         self.shared_callbacks_called = True
@@ -1376,7 +1441,7 @@ class Dash(object):
             if service_test(callback["service"]) and "args" not in callback:
                 callback_ids.append(output)
 
-        # If any inputs of our callbacks are incident with comps, these are the callbacks 
+        # If any inputs of our callbacks are incident with comps, these are the callbacks
         # we will call
         all_callback_ids = set()
         for c in comps:
@@ -1397,7 +1462,7 @@ class Dash(object):
             bodies = [self._callback_body(output, []) for output in callback_ids]
             await self._dispatch_callbacks(bodies)
 
-            # Final check -- if some of the callbacks haven't been called 
+            # Final check -- if some of the callbacks haven't been called
             # because of PreventUpdate, etc., continue with remaining callbacks
             discards = [output for output in all_callback_ids if "args" in self.callback_map[output]]
             for discard in discards:
