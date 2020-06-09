@@ -14,7 +14,7 @@ const pushee = {
     checkSocket: function() {
         if (pushee.socket===null) {
             //console.log('open socket');
-            const url = 'ws://' + document.domain + ':' + location.port + '/_push';
+            const url = 'ws://' + document.location.host + '/_push';
             pushee.socket = new WebSocket(url);
             pushee.socket.onmessage = pushee.receive;
             pushee.socket.onopen = pushee.open;
