@@ -1,1 +1,1 @@
-include dash_devices/*.js dash_devices/*.map
+include dash_devices/*.js 
