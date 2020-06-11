@@ -1,5 +1,5 @@
 import functools
-from dash import g_cc 
+from .dash import g_cc 
 
 from . import exceptions
 
