@@ -53,7 +53,7 @@ from ._utils import (
     intersect_ids, 
     find_prop_value,
 )
-from dash.dependencies import Output
+from .dependencies import Output
 from .pusher import Pusher, Alock
 from . import _validate
 from . import _watch

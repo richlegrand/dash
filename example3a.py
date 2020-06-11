@@ -1,5 +1,5 @@
 import dash_devices
-from dash.dependencies import Input, Output, State
+from dash_devices.dependencies import Input, Output, State
 import dash_html_components as html
 import dash_core_components as dcc
 import time
@@ -35,11 +35,11 @@ def func(value):
     [State('username', 'value'), State('password', 'value')])
 def func(submit, username, password):
     if username=='username' and password=='password':
-        dash.callback_context.client.authentication = 'user'
+        dash_devices.callback_context.client.authentication = 'user'
         update_admin_clients()  
         return Output('content', 'children', authenticated_layout)
     elif username=='admin' and password=='admin':
-        dash.callback_context.client.authentication = 'admin'
+        dash_devices.callback_context.client.authentication = 'admin'
         update_admin_clients()  
         return Output('content', 'children', authenticated_layout)        
     else:
@@ -52,14 +52,14 @@ def func(submit, username, password):
 
 @app.callback(None, [Input('logout', 'n_clicks')])
 def func(value):
-    dash.callback_context.client.authentication = None
+    dash_devices.callback_context.client.authentication = None
     update_admin_clients()  
     return Output('content', 'children', login_layout)
 
 @app.callback(Output('admin_content', 'children'), [Input('main', 'children')])
 def func(value):
-    output = update_admin_clients(dash.callback_context.client)
-    if dash.callback_context.client.authentication=='admin':
+    output = update_admin_clients(dash_devices.callback_context.client)
+    if dash_devices.callback_context.client.authentication=='admin':
         return output 
 
 def update_admin_clients(x_client=None):
