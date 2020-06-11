@@ -1,8 +1,8 @@
 import collections
 import re
 
-from .development.base_component import Component
-from .dependencies import Input, Output, State
+from dash.development.base_component import Component
+from dash.dependencies import Input, Output, State
 from . import exceptions
 from ._utils import patch_collections_abc, _strings, stringify_id
 

@@ -27,7 +27,7 @@ import plotly
 import dash_renderer
 
 from .fingerprint import build_fingerprint, check_fingerprint
-from .resources import Scripts, Css
+from dash.resources import Scripts, Css
 from .development.base_component import ComponentRegistry
 from .exceptions import PreventUpdate, InvalidResourceError
 from .version import __version__
