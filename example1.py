@@ -1,9 +1,9 @@
-import dash_devices
+import dash
 from dash.dependencies import Input, Output
 import dash_html_components as html
 import dash_core_components as dcc
 
-app = dash_devices.Dash(__name__)
+app = dash.Dash(__name__)
 app.config.suppress_callback_exceptions = True
 
 

@@ -32773,6 +32773,8 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var ramda__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ramda */ "./node_modules/ramda/es/index.js");
 /* harmony import */ var _actions__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ../actions */ "./src/actions/index.js");
 /* harmony import */ var _utils__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! ./utils */ "./src/actions/utils.js");
+/* harmony import */ var _pushee__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! ../pushee */ "./src/pushee.js");
+
 
 
 
@@ -32812,8 +32814,8 @@ function apiThunk(endpoint, method, store, id, body) {
       }
     });
 
-    if (config.server_service & services.PUSHEE_OTHER) {
-      return pusheeRequest(url).then(function (json) {
+    if (config.server_service & _pushee__WEBPACK_IMPORTED_MODULE_3__["services"].PUSHEE_OTHER) {
+      return Object(_pushee__WEBPACK_IMPORTED_MODULE_3__["pusheeRequest"])(url).then(function (json) {
         dispatch({
           type: store,
           payload: {

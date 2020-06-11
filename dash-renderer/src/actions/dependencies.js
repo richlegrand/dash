@@ -1268,8 +1268,8 @@ export function getCallbacksInLayout(graphs, paths, layoutChunk, opts) {
                     // unless specifically requested not to.
                     // ie this is the initial call of this callback even if it's
                     // not the page initialization but just a new layout chunk
-                    if ((callback.callback.service&services.NO_CLIENT_INITIAL_CALLBACK)===0 && 
-                        !callback.resolvedId.startsWith('_none')) {
+                    if ((cb.callback.service&services.NO_CLIENT_INITIAL_CALLBACK)===0 && 
+                        !cb.resolvedId.startsWith('_none')) {
                         cb.initialCall = true;
                         addCallback(cb);
                     }
