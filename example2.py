@@ -1,11 +1,11 @@
-import dash
+import dash_devices
 from dash.dependencies import Input, Output
 import dash_html_components as html
 import dash_core_components as dcc
 import plotly.express as px
 from threading import Timer
 
-app = dash.Dash(__name__)
+app = dash_devices.Dash(__name__)
 
 class Example:
     def __init__(self, app):
