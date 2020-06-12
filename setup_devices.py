@@ -5,10 +5,10 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="dash_devices", # Replace with your own username
-    version="0.0.2",
+    version="0.1.2",
     author="Rich LeGrand",
     author_email="rich@charmedlabs.com",
-    description="A version of Dash for devices.",
+    description="Dash for devices.",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/richlegrand/dash_devices",
