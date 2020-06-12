@@ -6,8 +6,8 @@ with open("README.md", "r") as fh:
 setuptools.setup(
     name="dash_devices", # Replace with your own username
     version="0.1.2",
-    author="Rich LeGrand",
-    author_email="rich@charmedlabs.com",
+    author="Charmed Labs",
+    author_email="support@charmedlabs.com",
     description="Dash for devices.",
     long_description=long_description,
     long_description_content_type="text/markdown",
