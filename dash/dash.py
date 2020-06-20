@@ -648,7 +648,7 @@ class Dash(object):
             "suppress_callback_exceptions": self.config.suppress_callback_exceptions,
             "server_service": self.config.server_service,
         }
-        if self._dev_tools.hot_reload:
+        if self._dev_tools.hot_reload or self._dev_tools.client_reload:
             config["hot_reload"] = {
                 # convert from seconds to msec as used by js `setInterval`
                 "interval": int(self._dev_tools.hot_reload_interval * 1000),
@@ -1622,6 +1622,7 @@ class Dash(object):
             "ui",
             "props_check",
             "serve_dev_bundles",
+            "client_reload",
             "hot_reload",
             "silence_routes_logging",
             "prune_errors",
@@ -1647,6 +1648,7 @@ class Dash(object):
         dev_tools_ui=None,
         dev_tools_props_check=None,
         dev_tools_serve_dev_bundles=None,
+        dev_tools_client_reload=None,
         dev_tools_hot_reload=None,
         dev_tools_hot_reload_interval=None,
         dev_tools_hot_reload_watch_interval=None,
@@ -1733,6 +1735,7 @@ class Dash(object):
             ui=dev_tools_ui,
             props_check=dev_tools_props_check,
             serve_dev_bundles=dev_tools_serve_dev_bundles,
+            client_reload=dev_tools_client_reload,
             hot_reload=dev_tools_hot_reload,
             hot_reload_interval=dev_tools_hot_reload_interval,
             hot_reload_watch_interval=dev_tools_hot_reload_watch_interval,
@@ -1744,6 +1747,9 @@ class Dash(object):
         if dev_tools.silence_routes_logging:
             logging.getLogger("werkzeug").setLevel(logging.ERROR)
             self.logger.setLevel(logging.INFO)
+
+        if dev_tools.client_reload:
+            self._hot_reload.hash = generate_hash()
 
         if dev_tools.hot_reload:
             _reload = self._hot_reload
@@ -1859,6 +1865,7 @@ class Dash(object):
         dev_tools_ui=None,
         dev_tools_props_check=None,
         dev_tools_serve_dev_bundles=None,
+        dev_tools_client_reload=None,
         dev_tools_hot_reload=None,
         dev_tools_hot_reload_interval=None,
         dev_tools_hot_reload_watch_interval=None,
@@ -1903,6 +1910,9 @@ class Dash(object):
             env: ``DASH_SERVE_DEV_BUNDLES``
         :type dev_tools_serve_dev_bundles: bool
 
+        :param dev_tools_client_reload: Activate auto refresh on client browser when app restarts.
+        :type dev_tools_client_reload: bool
+
         :param dev_tools_hot_reload: Activate hot reloading when app, assets,
             and component files change. env: ``DASH_HOT_RELOAD``
         :type dev_tools_hot_reload: bool
@@ -1943,6 +1953,7 @@ class Dash(object):
             dev_tools_ui,
             dev_tools_props_check,
             dev_tools_serve_dev_bundles,
+            dev_tools_client_reload,
             dev_tools_hot_reload,
             dev_tools_hot_reload_interval,
             dev_tools_hot_reload_watch_interval,
