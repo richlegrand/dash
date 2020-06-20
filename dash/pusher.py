@@ -58,6 +58,7 @@ class Client(object):
         self.connect_time = time.time()
         self.address = quart.websocket.remote_addr
         self.host = quart.websocket.host
+        self.origin = quart.websocket.origin
         self.authentication = None
 
     def __str__(self):
