@@ -9,6 +9,8 @@ const pushee = {
 
     sendQueue: [],
 
+    prePropsTable: {},
+
     requestNum: 0, 
 
     checkSocket: function() {
@@ -46,6 +48,16 @@ const pushee = {
         pushee.checkSocket();
 		// add to table
 		pushee.setProps[props.id] = setProps;	
+        // Check to see if there are any properties in the prePropsTable.
+        // If so, call update on them.
+        if (props.id in pushee.prePropsTable) {
+            for (const data of pushee.prePropsTable[props.id]) {
+                var obj = {};
+                obj[props.id] = data.val;
+                pushee.update(obj, data.notify);
+            }
+            delete pushee.prePropsTable[props.id];
+        }
 	},
 
 	receive: function(event) {
@@ -84,6 +96,8 @@ const pushee = {
 		pushee.socket = null;
         pushee.sendQueue = [];
         pushee.pending = {}; 
+        pushee.prePropsTable = {};
+        pushee.setProps = {};   
 	},
 
     open: function(event) {
@@ -97,9 +111,11 @@ const pushee = {
             if (id in pushee.setProps) {
                 const val = data[id];
             	pushee.setProps[id](val, notify, 'children' in val);
-            }
-            //else
-            //	console.log('cannot find ' + id);
+            } else if (id in pushee.prePropsTable) 
+                // save for later
+                pushee.prePropsTable[id].push({val: data[id], notify: notify});
+            else
+                pushee.prePropsTable[id] = [{val: data[id], notify: notify}];
         }
     },
 };

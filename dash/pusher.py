@@ -54,7 +54,6 @@ class Alock:
 
 class Client(object):
     def __init__(self):
-        self.served_layout = False
         self.send_queue = asyncio.Queue()
         self.connect_time = time.time()
         self.address = quart.websocket.remote_addr
@@ -163,16 +162,10 @@ class Pusher(object):
         if client is None: 
             for client in self.clients:
                 if client is not x_client:
-                    if client.served_layout:
-                        await client.send_queue.put(message)
-                    else:
-                        result -= 1
+                    await client.send_queue.put(message)
         # Send to one client.
         else:
-            if client.served_layout:
-                await client.send_queue.put(message)
-            else:
-                result -= 1
+            await client.send_queue.put(message)
         # Give caller feedback regarding failed sends.
         return result
 

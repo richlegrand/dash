@@ -636,8 +636,6 @@ class Dash(object):
                 json.dumps(layout, cls=plotly.utils.PlotlyJSONEncoder),
                 mimetype="application/json",
             )
-        if client is not None:
-            client.served_layout = True
 
     def _config(self):
         # pieces of config needed by the front end
