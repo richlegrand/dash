@@ -1,6 +1,6 @@
 # Dash for devices (dash_devices)
 
-For devices seeking a front-end, [Dash](https://github.com/plotly/dash) can be used to provide an easy-to-program and browser-compatible user interface.  It's compelling!  You only need to know a bit of Python...  But there are some [issues](#problems-we-encountered-with-dash-and-devices) that need to be considered when using Dash with hardware/devices.  This fork of Dash is an attempt to address these issues.
+For devices seeking a front-end, [Dash](https://github.com/plotly/dash) can be used to provide an easy-to-program and browser-compatible user interface.  It's compelling!  You only need to know a bit of Python...  But there are some [issues](https://github.com/richlegrand/dash_devices#problems-we-encountered-with-dash-and-devices) that need to be considered when using Dash with hardware/devices.  This fork of Dash is an attempt to address these issues.
 
 Among other changes, we've introduced _shared_ callbacks:
 
@@ -119,14 +119,15 @@ See [example2.py](https://github.com/richlegrand/dash_devices/blob/dev/example2.
 
 ### "No output" option for callbacks
 
-Dash requires that each callback have at least one output.  But sometimes you just want a callback (no output wanted/needed.)  For example, a button to take a picture.  Here, the callback to the button exists to take the picture and store it somewhere (a side-effect), not (typically) to inject another piece of data into the layout. 
+Dash requires that each callback have at least one output.  But sometimes you just want a callback (no output wanted/needed.)  For example, a button to take a picture.  Here, the callback to the button exists to take the picture and store it somewhere (a side-effect), not (typically) to inject another piece of data into the layout, which is what a callback does normally. 
 
 For example:
 
 ```python
-@app.callback_shared(None, [Input('slider', 'value')]) # specify None for output
+@app.callback_shared(None, [Input('Click', 'n_clicks')]) # specify None for output
 def func(value):
-    print('Slider:', value)
+    print('Taking picture...')
+    # ...
     # return nothing
 ```
 
@@ -154,7 +155,7 @@ def func(submit, username, password):
 
 See [example3.py](https://github.com/richlegrand/dash_devices/blob/dev/example3.py).
 
-The upshot here is to use an `Output` object (or objects) to return the alternate result.  (Note, the third argument to `Output` is something we added -- it's optional, but required here to specifiy the value of the given `Output`.) 
+The upshot here is to use an `Output` object (or objects) to return the alternate result.  (Note, the third argument to `Output` is something we added -- it's optional, but required here to specify the value of the given `Output`.) 
 
 This works with shared callbacks also.  
 
@@ -165,7 +166,7 @@ We use [Quart](https://pgjones.gitlab.io/quart/) instead of Flask.  Quart is a r
 
 We gave callbacks the option of being coroutines (async) or synchronous routines.  Like the Flask implementation of Dash, synchronous routines execute in their own thread to keep things snappy.  Coroutines execute in their own asyncio task for the same reason.  Giving callbacks this option probably contributed to the biggest changes to the server-side code.  The callback_context code in dash.py needed significant refactoring.  
 
-We haven't measured any noticeable performance improvement with Quart ([see below](#benchmarks).)  But we expect that Dash with Quart has better CPU scaling than with Flask.   
+We haven't measured any noticeable performance improvement with Quart ([see below](https://github.com/richlegrand/dash_devices#benchmarks).)  But we expect that Dash with Quart has better CPU scaling than with Flask.   
 
 
 ### Other modes/services
@@ -174,7 +175,7 @@ Shared callbacks assume that you have a single resource that you want to share. 
 
 We created the "S2" service with this in mind.  By using the client field in the callback_context a given callback can provide a device-specific view for a given client.  
 
-The `Services` class in [dash.py](dash/dash.py) makes it fairly easy to customize a callback service that better meets your needs.  The custom service can be passed into `callback()`. 
+The `Services` class in [dash.py](https://github.com/richlegrand/dash_devices/blob/dev/dash/dash.py) makes it fairly easy to customize a callback service that better meets your needs.  The custom service can be passed into `callback()`. 
 
 
 ## Benchmarks 
@@ -194,14 +195,14 @@ Flask with HTTP service is what Dash uses normally.  I'm guessing that WebSocket
 
 I was expecting to see Quart and asyncio add a small improvement in performance over Flask and traditional threading (HTTP service row).  The measurements didn't show this though (Quart was a bit slower, which was surprising.)  I should note that there were a few milliseconds of noise in the numbers, especially the HTTP service measurements.  I'd expect that Quart/asyncio would have better CPU scaling than Flask though. 
 
-See the [notes below](#notes-about-benchmark-testing) for more details about these tests.
+See the [notes below](https://github.com/richlegrand/dash_devices#notes-about-benchmark-testing) for more details about these tests.
 
 
 ## Problems we encountered with Dash and devices
 
 ### The root of the problem
 
-The root of the problem is that devices make the Dash server _state-ful_.  Dash's design avoids any kind of state on the server side.  State complicates things.  When you add state to the server:
+The root of the problem is that devices make the Dash server _state-ful_.  Dash's design avoids any kind of state on the server side.  When you add state to the server:
 
 1.  You want to communicate the state to the client(s).  In general, the state can change both because of client interactions and independent of client interactions.    
 2.  You want the client(s) to modify/affect the state.
@@ -217,19 +218,19 @@ With shared callbacks the state changes are distributed to clients automatically
 
 One of the first problems we noticed with Dash was that the brightness slider on our camera would act flakey -- the brightness slider would be at 100% but the camera would only be 87% brightness because the most recent callback was 87%.  The reason for this: each slider update from the client is sent as a separate HTTP request, and the receive order, while usually correct, sometimes isn't correct -- the 100% message might be received _before_ the 87% message.  *This is the nature of HTTP requests -- the ordering isn't guaranteed.*  It isn’t a problem within the normal Dash scheme of things, it’s only a problem when the server needs messages to be delivered in order (e.g. when you are interacting with a device.)
 
-The issue is fixed by using a WebSocket to send component updates.  The WebSocket guarantees ordering, and it's faster -- see [benchmarks](#benchmarks).
+The issue is fixed by using a WebSocket to send component updates.  The WebSocket guarantees ordering, and it's faster -- see [benchmarks](https://github.com/richlegrand/dash_devices#benchmarks).
 
 
 ### Thread safety and callbacks 
 
 Each Dash callback is executed in a separate thread.  This keeps the Dash server snappy:  it doesn't wait for a given callback to complete.  But when you have a shared resource being accessed in the callback (e.g. a device) the callback code is typically no longer threadsafe.  So we added a lock to each shared callback.  The WebSocket queue guarantees ordering and the lock guarantees serialization of shared callbacks.  This only applies to shared callbacks -- regular callbacks are unchanged.  
 
-For shared callbacks, "serialization" can be disabled in the "service" argument to `callback()`. 
+For shared callbacks, "serialization" can be disabled in the `service` argument to `callback()`. 
 
 
 ### Race conditions
 
-There is a more general issue of race conditions that arises when you mix HTTP requests with WebSocket communication.  So we made all communication (layout upload, dependencies and component updates) happen over WebSocket by default, but this can be set as a config option (via `server_service`).   With all component-related communcation happening over WebSocket, messages are delivered in order, and the odd race condition is avoided. 
+There is a more general issue of race conditions that arises when you mix HTTP requests with WebSocket communication.  So we made all communication (layout upload, dependencies and component updates) happen over WebSocket by default, but this can be set as a config option (via `server_service`).   With all component-related communication happening over WebSocket, messages are delivered in order, and the odd race condition is avoided. 
 
 
 ## Notes about benchmark testing
@@ -242,9 +243,9 @@ There is a more general issue of race conditions that arises when you mix HTTP r
 *  Flask 1.1.2
 *  Quart 0.11.5
 
-The tests were done by modifying dash_renderer -- inserting a timer in `handleServerside()`.  Start the timer before fetch, stop the timer when `data` is received, then take the time difference and insert into a running averager until the average sufficiently converges.  This usually happens after 100 or so measurements, but to keep things consistent I ran each test for 300 "clicks" (I would click on a slider object.)  The test program is [here](timer.py).
+The tests were done by modifying dash_renderer -- inserting a timer in `handleServerside()`.  Start the timer before fetch, stop the timer when `data` is received, then take the time difference and insert into a running averager until the average sufficiently converges.  This usually happens after 100 or so measurements, but to keep things consistent I ran each test for 300 clicks (I would click on a slider object.)  The test program is [here](https://github.com/richlegrand/dash_devices/blob/dev/timer.py).
 
-The timer code is [here](dash-renderer/src/timer.js).  For example, to insert into (unmodified) [index.js](dash-renderer/src/actions/index.js):
+The timer code is [here](https://github.com/richlegrand/dash_devices/blob/dev/dash-renderer/src/timer.js).  For example, to insert into (unmodified) [index.js](https://github.com/richlegrand/dash_devices/blob/dev/dash-renderer/src/actions/index.js):
 
 ```javascript
 function handleServerside(config, payload, hooks) {
@@ -279,10 +280,10 @@ We also ran tests using localhost (client and server running on the same Ubuntu 
 | WebSocket service | -           | __5.2 ms__                      | __4.7 ms__                    |
 
 
-### Other potential speed-ups
+### Potential future features/improvements
 
-You can chain callbacks together in Dash -- the output of one callback is the input for another, the output of that callback is the input for yet another, etc.  Dash handles chaining at the client.  The client dispatches the callback at the server, gets the result and then dispatches the next callback.  The process continues until the end of the chain is reached.  Using this method, the network latency is added two times for each callback in the chain. 
+*  All callback functions within Dash need to be defined upon initialization.  WebSockets make it possible to send new callbacks dynamically as the page content changes. 
 
-For shared callbacks, callbacks are initiated and chained together at the server.  The callbacks are called in order and the outputs are sent to the client(s) over WebSocket(s) in order.  Using this method, a slow network will result in a delayed propagation of the callback results to the client(s), but no significant delays in the execution of the callbacks.    
+*  Other frameworks such as [FastAPI](https://fastapi.tiangolo.com/) can potentially improve [latency/performance](https://www.techempower.com/benchmarks/) compared to Quart. 
 
-The same can be done (I think) for non-shared (regular) callbacks for a potential a speed-up.   
+*  You can chain callbacks together in Dash -- the output of one callback is the input for another, the output of that callback is the input for yet another, etc.  Dash handles chaining at the client.  The client dispatches the callback at the server, gets the result and then dispatches the next callback.  The process continues until the end of the chain is reached.  Using this method, the network latency is added two times for each callback in the chain. For shared callbacks, callbacks are initiated and chained together at the server.  The callbacks are called in order and the outputs are sent to the client(s) over WebSocket(s) in order.  Using this method, a slow network will result in a delayed propagation of the callback results to the client(s), but no significant delays in the execution of the callbacks.  The same can be done for non-shared (regular) callbacks for a potential a speed-up.   
