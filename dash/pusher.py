@@ -7,13 +7,14 @@ import time
 import sys
 import inspect
 import traceback 
+from threading import Condition
 
 context_rcount = ContextVar('context_rcount')
 
 # This class defers the creation of the asyncio Lock until it's needed,
 # to prevent issues with creating the lock before the event loop is running.
 # It also handles reentrance/recursion. 
-class Alock:
+class ARLock:
     def __init__(self):
         self.lock = None
 
@@ -46,11 +47,67 @@ class Alock:
 
     async def __aenter__(self):
         await self.acquire()
-        return self.lock
+        return None
 
     async def __aexit__(self, exc_type, exc_value, traceback):
         self.release()
 
+
+# The "most recent" locks prevent more than 1 thread or task from waiting.
+# If you try to acquire the lock, the waiting thread is released with a  
+# False result and the new thread starts waiting.  This prevents the "wind-up"
+# that can happen when several threads are waiting on a slow-to-be-released lock.
+class ALockMostRecent:
+    
+    def __init__(self):
+        self.cond = None
+        self.locked = False
+
+    async def acquire(self):
+        if self.cond is None:
+            self.cond = asyncio.Condition() # Defer creation until used.
+        async with self.cond:
+            if not self.locked:
+                self.locked = True
+                return True
+            
+            self.cond.notify()
+                
+            await self.cond.wait()
+            result = not self.locked
+            self.locked = True
+            return result
+            
+    async def release(self):
+        async with self.cond:
+            self.locked = False
+            self.cond.notify()
+    
+
+class LockMostRecent:
+    
+    def __init__(self):
+        self.cond = Condition()
+        self.locked = False
+
+    def acquire(self):
+        with self.cond:
+            if not self.locked:
+                self.locked = True
+                return True
+            
+            self.cond.notify()
+                
+            self.cond.wait()
+            result = not self.locked
+            self.locked = True
+            return result
+            
+    def release(self):
+        with self.cond:
+            self.locked = False
+            self.cond.notify()
+    
 
 class Client(object):
     def __init__(self):
@@ -69,7 +126,9 @@ class Client(object):
 def exception_handler(loop, context):
     if 'future' in context:
         task = context['future']
-        task.print_stack()
+        exception = context['exception']
+        # Route the exception through sys.excepthook.
+        sys.excepthook(exception.__class__, exception, exception.__traceback__)
 
 
 class Pusher(object):

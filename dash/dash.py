@@ -50,11 +50,11 @@ from ._utils import (
     list_to_mods,
     mods_to_list,
     flatten_layout,
-    intersect_ids, 
+    intersect_ids_props, 
     find_prop_value,
 )
 from .dependencies import Output
-from .pusher import Pusher, Alock
+from .pusher import Pusher, ARLock, ALockMostRecent, LockMostRecent
 from . import _validate
 from . import _watch
 
@@ -128,8 +128,10 @@ class Services(object):
     SHARED_CALLBACK = 1<<4
     # not supported for server_service, opposite = concurrent callbacks
     SERIALIZED_CALLBACK = 1<<5
+    # not supported for server_service, opposite = concurrent callbacks
+    SERIALIZED_MOST_RECENT_CALLBACK = 1<<6
     # not supported for server service, opposite = do not inform other clients of shared changes
-    SHARE_WITH_OTHER_CLIENTS = 1<<6
+    SHARE_WITH_OTHER_CLIENTS = 1<<7
 
     # Callback services:
     # S0: normal dash service
@@ -137,7 +139,7 @@ class Services(object):
 
     # SHARED aka S1: all clients see the same thing, e.g. one device.
     SHARED = PUSHER_UPDATE + NO_CLIENT_INITIAL_CALLBACK + SHARED_CALLBACK + \
-        SERVER_INITIAL_CALLBACK + SERIALIZED_CALLBACK + SHARE_WITH_OTHER_CLIENTS
+        SERVER_INITIAL_CALLBACK + SERIALIZED_MOST_RECENT_CALLBACK + SHARE_WITH_OTHER_CLIENTS
 
     # S2: clients see different things, e.g. N devices.
     S2 = PUSHER_UPDATE + SERIALIZED_CALLBACK
@@ -383,7 +385,7 @@ class Dash(object):
         self.shared_callbacks_called = False
         # Table of components, indexed by id
         self.layout_components = {}
-        self.handle_layout_lock = Alock()
+        self.handle_layout_lock = ARLock()
         self.none_output_count = 0
 
         # list of inline scripts
@@ -824,7 +826,6 @@ class Dash(object):
         path_in_pkg, has_fingerprint = check_fingerprint(fingerprinted_path)
 
         _validate.validate_js_path(self.registered_paths, package_name, path_in_pkg)
-
         extension = "." + path_in_pkg.split(".")[-1]
         mimetype = mimetypes.types_map.get(extension, "application/octet-stream")
 
@@ -1142,15 +1143,20 @@ class Dash(object):
 
                 if is_coro:
                     if lock is not None:
-                        await lock.acquire()
+                        if not await lock.acquire():
+                            raise PreventUpdate  
                     try:
                         output_value = await func(*args)  # %% callback invoked
                     finally:
                         if lock is not None:
-                            lock.release()
+                            if isinstance(lock, ALockMostRecent):
+                                await lock.release()
+                            else:
+                                lock.release()
                 else:
                     if lock is not None:
-                        lock.acquire()
+                        if not lock.acquire():
+                            raise PreventUpdate
                     try:
                         output_value = func(*args)  # %% callback invoked
                     finally:
@@ -1209,9 +1215,19 @@ class Dash(object):
                 return jsonResponse, response, alt
 
             if is_coro:
-                lock = Alock() if service&Services.SERIALIZED_CALLBACK else None
+                if service&Services.SERIALIZED_MOST_RECENT_CALLBACK:
+                    lock = ALockMostRecent()
+                elif service&Services.SERIALIZED_CALLBACK:
+                    lock = ARLock()
+                else:
+                    lock = None
             else:
-                lock = threading.Lock() if service&Services.SERIALIZED_CALLBACK else None 
+                if service&Services.SERIALIZED_MOST_RECENT_CALLBACK:
+                    lock = LockMostRecent() 
+                elif service&Services.SERIALIZED_CALLBACK:
+                    lock = threading.Lock()
+                else: 
+                    lock = None 
             self.callback_map[callback_id]["callback"] = add_context, is_coro, lock
         
             return add_context
@@ -1316,7 +1332,7 @@ class Dash(object):
 
 
     # Return a list of callbacks (output ids).
-    def _callback_compare(self, props, service_test, test, callback_ids):
+    def _callback_compare(self, service_test, test, callback_ids):
         callbacks = []
         x_callbacks = []
         if callback_ids is None:
@@ -1331,12 +1347,12 @@ class Dash(object):
         return callbacks, x_callbacks
 
     def _callback_intersect(self, props, service_test, callback_ids=None):
-        return self._callback_compare(props, service_test, 
-            lambda i : intersect_ids(i, props), callback_ids)
+        return self._callback_compare(service_test, 
+            lambda i : intersect_ids_props(i, props), callback_ids)
 
     def _callback_diff(self, props, service_test, callback_ids=None):
-        return self._callback_compare(props, service_test, 
-            lambda i : not intersect_ids(i, props), callback_ids)
+        return self._callback_compare(service_test, 
+            lambda i : not intersect_ids_props(i, props), callback_ids)
 
     # This method can only apply to shared callbacks.
     def _callback_body(self, output, inputs):

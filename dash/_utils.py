@@ -286,9 +286,9 @@ def flatten_layout(layout):
     return []
 
 
-def intersect_ids(list0, list1):
-    id0 = [i["id"] for i in list0]
-    id1 = [i["id"] for i in list1]
+def intersect_ids_props(list0, list1):
+    id0 = [(i["id"], i['property']) for i in list0]
+    id1 = [(i["id"], i['property']) for i in list1]
     return list(set(id0).intersection(id1))
 
 
