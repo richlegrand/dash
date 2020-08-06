@@ -78,7 +78,8 @@ class ARCLock:
     def release(self):
         self.context.count -= 1
         if self.context.count==0:
-            self.context = None
+            # Reset context so we don't reuse if context isn't supplied.
+            self.context = None 
             self.lock.release()
 
     def locked(self):
@@ -158,20 +159,12 @@ class Client(object):
             self.address, self.host, self.authentication)
 
 
-def exception_handler(loop, context):
-    if 'future' in context:
-        task = context['future']
-        exception = context['exception']
-        # Route the exception through sys.excepthook.
-        sys.excepthook(exception.__class__, exception, exception.__traceback__)
-
-
 class Pusher(object):
 
     def __init__(self, server):
         self.server = server
         self.clients = []
-        self.loop = None
+        self.loop = asyncio.get_event_loop()
         self.url_map = {}
         self.connect_callback = None
 
@@ -180,11 +173,6 @@ class Pusher(object):
         async def update_component_socket():
             #print('**** spawning')
             try:
-                # Quart creates the event loop.  This is the best place to grab it (I think).
-                if self.loop is None:
-                    self.loop = asyncio.get_event_loop()
-                    self.loop.set_exception_handler(exception_handler)
-
                 tasks = []
                 client = Client()
                 self.clients.append(client)

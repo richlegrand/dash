@@ -110,8 +110,16 @@ class _Context(object):
     # pylint: disable=too-few-public-methods
     pass
 
-#
+
 g_cc = ContextVar("calling_context")
+
+
+def exception_handler(loop, context):
+    if 'future' in context:
+        task = context['future']
+        exception = context['exception']
+        # Route the exception through sys.excepthook.
+        sys.excepthook(exception.__class__, exception, exception.__traceback__)
 
 
 class Services(object):
@@ -378,6 +386,10 @@ class Dash(object):
             "via the Dash constructor"
         )
 
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        self.loop.set_exception_handler(exception_handler)
+        
         # list of dependencies - this one is used by the back end for dispatching
         self.callback_map = {}
         # same deps as a list to catch duplicate outputs, and to send to the front end
@@ -502,9 +514,7 @@ class Dash(object):
 
     # Note, client==None means all clients.
     def push_mods(self, mods, client=None):
-        if self.pusher.loop is None:
-            raise Exception("Cannot call push_mods before run_server() is called.")
-        fut = asyncio.run_coroutine_threadsafe(self.push_mods_coro(mods, client), self.pusher.loop)
+        fut = asyncio.run_coroutine_threadsafe(self.push_mods_coro(mods, client), self.loop)
         return fut.result()
 
 
@@ -1254,12 +1264,11 @@ class Dash(object):
         if is_coro:
             return await func(body, response, lock, client)  # %% callback invoked
         else:
-            loop = asyncio.get_event_loop()
             # The callback isn't a coroutine, so we need to run in an executor.
             # Note, there is no easy way to have a wrapper return a coroutine or routine conditionally...
             # So func is always declared a coroutine and runcoro() allows us to run it
             # (without any awaits -- it's only declared a coroutine) inside executor thread.  
-            return await loop.run_in_executor(None, runcoro, func(body, response, lock, client))  # %% callback invoked 
+            return await self.loop.run_in_executor(None, runcoro, func(body, response, lock, client))  # %% callback invoked 
 
     # dispatch() and callback() are fairly complex because we're handling various cases:
     # Shared/unshared, coro/threaded, socket service/http service, alt response/regular response/no response.
@@ -1267,20 +1276,26 @@ class Dash(object):
         if body:        
             service = self.callback_map[body["output"]]["service"]
             shared = Services.shared_test(service)
-            # Client will only be set on first callback in chain.  We only want to 
-            # send changed props for first dispatch in chain.
-            # We share input changes with other clients, but not originating client.
-            # Note, we could wait and merge input_mods with output_mods and send in 
-            # one combined message, but this way, we get the changes sent without the 
-            # latency of the callback. 
-            if client and shared: 
-                input_mods = collections.defaultdict(dict)
-                for cpi in body["changedPropIds"]:
-                    id_, prop = cpi.split(".")
-                    input_mods[id_][prop] = find_prop_value(body["inputs"], id_, prop)
-                    if service&Services.SHARE_WITH_OTHER_CLIENTS:
-                        #print("send input mods", input_mods, client)
-                        await self.share_shared_mods(input_mods, client)
+            # Set client context for client mutexability.
+            if client:
+                g = _Context()  
+                g_cc.set(g)
+                g.client_context = client.context
+                
+                # Client will only be set on first callback in chain.  We only want to 
+                # send changed props for first dispatch in chain.
+                # We share input changes with other clients, but not originating client.
+                # Note, we could wait and merge input_mods with output_mods and send in 
+                # one combined message, but this way, we get the changes sent without the 
+                # latency of the callback. 
+                if shared: 
+                    input_mods = collections.defaultdict(dict)
+                    for cpi in body["changedPropIds"]:
+                        id_, prop = cpi.split(".")
+                        input_mods[id_][prop] = find_prop_value(body["inputs"], id_, prop)
+                        if service&Services.SHARE_WITH_OTHER_CLIENTS:
+                            #print("send input mods", input_mods, client)
+                            await self.share_shared_mods(input_mods, client)
 
             # Call callback.
             try:
@@ -2031,5 +2046,5 @@ class Dash(object):
 
             self.logger.info("Debugger PIN: %s", debugger_pin)
 
-        self.server.run(host=host, port=port, debug=debug, **flask_run_options)
+        self.server.run(host=host, port=port, debug=debug, loop=self.loop, **flask_run_options)
 
