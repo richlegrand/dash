@@ -52,6 +52,40 @@ class ARLock:
     async def __aexit__(self, exc_type, exc_value, traceback):
         self.release()
 
+class LockContext:
+    def __init__(self):
+        self.count = 0
+
+class ARCLock:
+    def __init__(self):
+        self.lock = None
+        self.context = None
+        self.default_context = LockContext()
+
+    async def acquire(self, context=None):
+        if self.lock is None:
+            self.lock = asyncio.Lock()
+        if context is None:
+            context = self.default_context
+        if self.context is None:
+            self.context = context
+        if self.context.count==0 or self.context is not context:
+            await self.lock.acquire()
+            self.context = context
+
+        self.context.count += 1
+
+    def release(self):
+        self.context.count -= 1
+        if self.context.count==0:
+            self.context = None
+            self.lock.release()
+
+    def locked(self):
+        if self.lock is None:
+            return False
+        return self.lock.locked()
+
 
 # The "most recent" locks prevent more than 1 thread or task from waiting.
 # If you try to acquire the lock, the waiting thread is released with a  
@@ -117,6 +151,7 @@ class Client(object):
         self.host = quart.websocket.host
         self.origin = quart.websocket.origin
         self.authentication = None
+        self.context = LockContext()
 
     def __str__(self):
         return "<Client: address={}, host={}, authentication={}>".format(

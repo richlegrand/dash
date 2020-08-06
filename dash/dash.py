@@ -54,7 +54,7 @@ from ._utils import (
     find_prop_value,
 )
 from .dependencies import Output
-from .pusher import Pusher, ARLock, ALockMostRecent, LockMostRecent
+from .pusher import Pusher, ARCLock, ALockMostRecent, LockMostRecent
 from . import _validate
 from . import _watch
 
@@ -385,7 +385,7 @@ class Dash(object):
         self.shared_callbacks_called = False
         # Table of components, indexed by id
         self.layout_components = {}
-        self.handle_layout_lock = ARLock()
+        self.handle_layout_lock = ARCLock()
         self.none_output_count = 0
 
         # list of inline scripts
@@ -435,23 +435,30 @@ class Dash(object):
 
     
     async def handle_layout(self, id_, prop, val):
-        async with self.handle_layout_lock:
-            if id_ is None or prop=="children":
-                comps = flatten_layout(val)
-                for comp in comps:
-                    try:
-                        self.layout_components[comp.id]
-                    except KeyError:
-                        self.layout_components[comp.id] = comp
-                await self._initial_callbacks(comps)
-
-            if id_ and prop:
-                try: # Handle races with push_mods.
-                    comp = self.layout_components[id_]
-                    setattr(comp, prop, val)
+        # Look for client context.
+        try:
+            g = g_cc.get()
+            client_context = g.client_context
+        except (LookupError, AttributeError):
+            client_context = None
+        # Client context provides mutexability between clients.
+        await self.handle_layout_lock.acquire(client_context)
+        if id_ is None or prop=="children":
+            comps = flatten_layout(val)
+            for comp in comps:
+                try:
+                    self.layout_components[comp.id]
                 except KeyError:
-                    pass
+                    self.layout_components[comp.id] = comp
+            await self._initial_callbacks(comps)
 
+        if id_ and prop:
+            try: # Handle races with push_mods.
+                comp = self.layout_components[id_]
+                setattr(comp, prop, val)
+            except KeyError:
+                pass 
+        self.handle_layout_lock.release()
 
     async def mod_layout(self, mods):
         if isinstance(mods, list):
@@ -627,6 +634,12 @@ class Dash(object):
         self._index_string = value
 
     async def serve_layout(self, body=None, client=None, request_id=None):
+        # Set client context for client mutexability.
+        if client:
+            g = _Context()  
+            g_cc.set(g)
+            g.client_context = client.context
+        
         layout = self._layout_value()
         await self.handle_layout(None, None, layout)
 
@@ -1134,7 +1147,8 @@ class Dash(object):
                 ]
                 g.dash_response = response # None if pusher request
                 g.client = client # None if http request
-                
+                g.client_context = body.get("client_context", None)
+
                 args = inputs_to_vals(inputs) + inputs_to_vals(state)
 
                 # remember args for shared callbacks
@@ -1218,7 +1232,7 @@ class Dash(object):
                 if service&Services.SERIALIZED_MOST_RECENT_CALLBACK:
                     lock = ALockMostRecent()
                 elif service&Services.SERIALIZED_CALLBACK:
-                    lock = ARLock()
+                    lock = asyncio.Lock()
                 else:
                     lock = None
             else:
@@ -1383,6 +1397,14 @@ class Dash(object):
         body["outputs"] = callback["outputs"][0].copy() if len(callback["outputs"])==1 else deepcopy(callback["outputs"]) 
         if len(body["outputs"])==1:
             body["outputs"] = body["outputs"]
+
+        # If there is a client context, include in body. 
+        try:
+            g = g_cc.get()
+            body["client_context"] = g.client_context
+        except (LookupError, AttributeError):
+            pass
+
         #print("**** body", body)
         return body
 
