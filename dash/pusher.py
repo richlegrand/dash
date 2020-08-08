@@ -211,7 +211,7 @@ class Pusher(object):
             data = await quart.websocket.receive()
             data = json.loads(data)
             # Create new task so we can handle more messages and keep things snappy.
-            asyncio.create_task(quart.copy_current_websocket_context(self.dispatch)(data, client))
+            task = asyncio.create_task(self.dispatch(data, client))
 
     async def socket_sender(self, client):
         while True:

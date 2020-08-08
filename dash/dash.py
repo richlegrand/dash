@@ -514,6 +514,8 @@ class Dash(object):
 
     # Note, client==None means all clients.
     def push_mods(self, mods, client=None):
+        if not self.loop.is_running():
+            raise Exception("Cannot call push_mods() before calling run_server().")
         fut = asyncio.run_coroutine_threadsafe(self.push_mods_coro(mods, client), self.loop)
         return fut.result()
 
@@ -1429,10 +1431,7 @@ class Dash(object):
         tasks = []
         # If there are multiple callbacks, run in parallel.
         for body in bodies:
-            if quart.has_websocket_context():
-                task = asyncio.create_task(quart.copy_current_websocket_context(self.dispatch)(body))
-            else:
-                task = asyncio.create_task(self.dispatch(body))
+            task = asyncio.create_task(self.dispatch(body))
             tasks.append(task)
 
         await asyncio.gather(*tasks)
