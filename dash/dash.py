@@ -1347,14 +1347,14 @@ class Dash(object):
         return self.pusher.clients
     
 
-    def _valid_callback_ids(self, service_test):
+    def _valid_callback_ids(self, service_test, include_none_outputs=True):
         valid = []
         for output, callback in self.callback_map.items():
             try:
                 if not service_test(callback["service"]):
                     raise Exception
-                for i in callback["inputs"] + callback["outputs"]:  
-                    if i["id"] not in self.layout_components:
+                for i in callback["inputs"] + callback["outputs"]:
+                    if (not include_none_outputs or i["id"]!="_none") and i["id"] not in self.layout_components:
                         raise Exception
                 valid.append(output)
             except Exception:
@@ -1459,9 +1459,13 @@ class Dash(object):
         if self.shared_callbacks_called:
             return
 
-        # Find all shared callbacks that haven't been called
         callback_ids = []
-        valid_ids = self._valid_callback_ids(service_test)
+        # Find all shared callbacks that haven't been called.
+        # Look for valid callback ids (callbacks whose inputs and outputs correspond
+        # to components that are in the active list of components),
+        # but exclude None output callbacks, because we don't want to call them
+        # initially.
+        valid_ids = self._valid_callback_ids(service_test, False)
         for output in valid_ids:
             callback = self.callback_map[output]
             if service_test(callback["service"]) and "args" not in callback:
