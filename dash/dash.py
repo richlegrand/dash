@@ -54,7 +54,7 @@ from ._utils import (
     find_prop_value,
 )
 from .dependencies import Output
-from .pusher import Pusher, ARLock, ALockMostRecent, LockMostRecent
+from .pusher import Pusher, ARCLock, ALockMostRecent, LockMostRecent
 from . import _validate
 from . import _watch
 
@@ -110,8 +110,16 @@ class _Context(object):
     # pylint: disable=too-few-public-methods
     pass
 
-#
+
 g_cc = ContextVar("calling_context")
+
+
+def exception_handler(loop, context):
+    if 'future' in context:
+        task = context['future']
+        exception = context['exception']
+        # Route the exception through sys.excepthook.
+        sys.excepthook(exception.__class__, exception, exception.__traceback__)
 
 
 class Services(object):
@@ -378,6 +386,10 @@ class Dash(object):
             "via the Dash constructor"
         )
 
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        self.loop.set_exception_handler(exception_handler)
+        
         # list of dependencies - this one is used by the back end for dispatching
         self.callback_map = {}
         # same deps as a list to catch duplicate outputs, and to send to the front end
@@ -385,7 +397,7 @@ class Dash(object):
         self.shared_callbacks_called = False
         # Table of components, indexed by id
         self.layout_components = {}
-        self.handle_layout_lock = ARLock()
+        self.handle_layout_lock = ARCLock()
         self.none_output_count = 0
 
         # list of inline scripts
@@ -435,23 +447,30 @@ class Dash(object):
 
     
     async def handle_layout(self, id_, prop, val):
-        async with self.handle_layout_lock:
-            if id_ is None or prop=="children":
-                comps = flatten_layout(val)
-                for comp in comps:
-                    try:
-                        self.layout_components[comp.id]
-                    except KeyError:
-                        self.layout_components[comp.id] = comp
-                await self._initial_callbacks(comps)
-
-            if id_ and prop:
-                try: # Handle races with push_mods.
-                    comp = self.layout_components[id_]
-                    setattr(comp, prop, val)
+        # Look for client context.
+        try:
+            g = g_cc.get()
+            client_context = g.client_context
+        except (LookupError, AttributeError):
+            client_context = None
+        # Client context provides mutexability between clients.
+        await self.handle_layout_lock.acquire(client_context)
+        if id_ is None or prop=="children":
+            comps = flatten_layout(val)
+            for comp in comps:
+                try:
+                    self.layout_components[comp.id]
                 except KeyError:
-                    pass
+                    self.layout_components[comp.id] = comp
+            await self._initial_callbacks(comps)
 
+        if id_ and prop:
+            try: # Handle races with push_mods.
+                comp = self.layout_components[id_]
+                setattr(comp, prop, val)
+            except KeyError:
+                pass 
+        self.handle_layout_lock.release()
 
     async def mod_layout(self, mods):
         if isinstance(mods, list):
@@ -495,9 +514,9 @@ class Dash(object):
 
     # Note, client==None means all clients.
     def push_mods(self, mods, client=None):
-        if self.pusher.loop is None:
-            raise Exception("Cannot call push_mods before run_server() is called.")
-        fut = asyncio.run_coroutine_threadsafe(self.push_mods_coro(mods, client), self.pusher.loop)
+        if not self.loop.is_running():
+            raise Exception("Cannot call push_mods() before calling run_server().")
+        fut = asyncio.run_coroutine_threadsafe(self.push_mods_coro(mods, client), self.loop)
         return fut.result()
 
 
@@ -627,6 +646,12 @@ class Dash(object):
         self._index_string = value
 
     async def serve_layout(self, body=None, client=None, request_id=None):
+        # Set client context for client mutexability.
+        if client:
+            g = _Context()  
+            g_cc.set(g)
+            g.client_context = client.context
+        
         layout = self._layout_value()
         await self.handle_layout(None, None, layout)
 
@@ -1134,7 +1159,8 @@ class Dash(object):
                 ]
                 g.dash_response = response # None if pusher request
                 g.client = client # None if http request
-                
+                g.client_context = body.get("client_context", None)
+
                 args = inputs_to_vals(inputs) + inputs_to_vals(state)
 
                 # remember args for shared callbacks
@@ -1218,7 +1244,7 @@ class Dash(object):
                 if service&Services.SERIALIZED_MOST_RECENT_CALLBACK:
                     lock = ALockMostRecent()
                 elif service&Services.SERIALIZED_CALLBACK:
-                    lock = ARLock()
+                    lock = asyncio.Lock()
                 else:
                     lock = None
             else:
@@ -1240,12 +1266,11 @@ class Dash(object):
         if is_coro:
             return await func(body, response, lock, client)  # %% callback invoked
         else:
-            loop = asyncio.get_event_loop()
             # The callback isn't a coroutine, so we need to run in an executor.
             # Note, there is no easy way to have a wrapper return a coroutine or routine conditionally...
             # So func is always declared a coroutine and runcoro() allows us to run it
             # (without any awaits -- it's only declared a coroutine) inside executor thread.  
-            return await loop.run_in_executor(None, runcoro, func(body, response, lock, client))  # %% callback invoked 
+            return await self.loop.run_in_executor(None, runcoro, func(body, response, lock, client))  # %% callback invoked 
 
     # dispatch() and callback() are fairly complex because we're handling various cases:
     # Shared/unshared, coro/threaded, socket service/http service, alt response/regular response/no response.
@@ -1253,20 +1278,26 @@ class Dash(object):
         if body:        
             service = self.callback_map[body["output"]]["service"]
             shared = Services.shared_test(service)
-            # Client will only be set on first callback in chain.  We only want to 
-            # send changed props for first dispatch in chain.
-            # We share input changes with other clients, but not originating client.
-            # Note, we could wait and merge input_mods with output_mods and send in 
-            # one combined message, but this way, we get the changes sent without the 
-            # latency of the callback. 
-            if client and shared: 
-                input_mods = collections.defaultdict(dict)
-                for cpi in body["changedPropIds"]:
-                    id_, prop = cpi.split(".")
-                    input_mods[id_][prop] = find_prop_value(body["inputs"], id_, prop)
-                    if service&Services.SHARE_WITH_OTHER_CLIENTS:
-                        #print("send input mods", input_mods, client)
-                        await self.share_shared_mods(input_mods, client)
+            # Set client context for client mutexability.
+            if client:
+                g = _Context()  
+                g_cc.set(g)
+                g.client_context = client.context
+                
+                # Client will only be set on first callback in chain.  We only want to 
+                # send changed props for first dispatch in chain.
+                # We share input changes with other clients, but not originating client.
+                # Note, we could wait and merge input_mods with output_mods and send in 
+                # one combined message, but this way, we get the changes sent without the 
+                # latency of the callback. 
+                if shared: 
+                    input_mods = collections.defaultdict(dict)
+                    for cpi in body["changedPropIds"]:
+                        id_, prop = cpi.split(".")
+                        input_mods[id_][prop] = find_prop_value(body["inputs"], id_, prop)
+                        if service&Services.SHARE_WITH_OTHER_CLIENTS:
+                            #print("send input mods", input_mods, client)
+                            await self.share_shared_mods(input_mods, client)
 
             # Call callback.
             try:
@@ -1316,14 +1347,14 @@ class Dash(object):
         return self.pusher.clients
     
 
-    def _valid_callback_ids(self, service_test):
+    def _valid_callback_ids(self, service_test, include_none_outputs=True):
         valid = []
         for output, callback in self.callback_map.items():
             try:
                 if not service_test(callback["service"]):
                     raise Exception
-                for i in callback["inputs"] + callback["outputs"]:  
-                    if i["id"] not in self.layout_components:
+                for i in callback["inputs"] + callback["outputs"]:
+                    if (not include_none_outputs or i["id"]!="_none") and i["id"] not in self.layout_components:
                         raise Exception
                 valid.append(output)
             except Exception:
@@ -1383,6 +1414,14 @@ class Dash(object):
         body["outputs"] = callback["outputs"][0].copy() if len(callback["outputs"])==1 else deepcopy(callback["outputs"]) 
         if len(body["outputs"])==1:
             body["outputs"] = body["outputs"]
+
+        # If there is a client context, include in body. 
+        try:
+            g = g_cc.get()
+            body["client_context"] = g.client_context
+        except (LookupError, AttributeError):
+            pass
+
         #print("**** body", body)
         return body
 
@@ -1392,10 +1431,7 @@ class Dash(object):
         tasks = []
         # If there are multiple callbacks, run in parallel.
         for body in bodies:
-            if quart.has_websocket_context():
-                task = asyncio.create_task(quart.copy_current_websocket_context(self.dispatch)(body))
-            else:
-                task = asyncio.create_task(self.dispatch(body))
+            task = asyncio.create_task(self.dispatch(body))
             tasks.append(task)
 
         await asyncio.gather(*tasks)
@@ -1423,9 +1459,13 @@ class Dash(object):
         if self.shared_callbacks_called:
             return
 
-        # Find all shared callbacks that haven't been called
         callback_ids = []
-        valid_ids = self._valid_callback_ids(service_test)
+        # Find all shared callbacks that haven't been called.
+        # Look for valid callback ids (callbacks whose inputs and outputs correspond
+        # to components that are in the active list of components),
+        # but exclude None output callbacks, because we don't want to call them
+        # initially.
+        valid_ids = self._valid_callback_ids(service_test, False)
         for output in valid_ids:
             callback = self.callback_map[output]
             if service_test(callback["service"]) and "args" not in callback:
@@ -2009,5 +2049,5 @@ class Dash(object):
 
             self.logger.info("Debugger PIN: %s", debugger_pin)
 
-        self.server.run(host=host, port=port, debug=debug, **flask_run_options)
+        self.server.run(host=host, port=port, debug=debug, loop=self.loop, **flask_run_options)
 

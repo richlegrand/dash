@@ -52,6 +52,41 @@ class ARLock:
     async def __aexit__(self, exc_type, exc_value, traceback):
         self.release()
 
+class LockContext:
+    def __init__(self):
+        self.count = 0
+
+class ARCLock:
+    def __init__(self):
+        self.lock = None
+        self.context = None
+        self.default_context = LockContext()
+
+    async def acquire(self, context=None):
+        if self.lock is None:
+            self.lock = asyncio.Lock()
+        if context is None:
+            context = self.default_context
+        if self.context is None:
+            self.context = context
+        if self.context.count==0 or self.context is not context:
+            await self.lock.acquire()
+            self.context = context
+
+        self.context.count += 1
+
+    def release(self):
+        self.context.count -= 1
+        if self.context.count==0:
+            # Reset context so we don't reuse if context isn't supplied.
+            self.context = None 
+            self.lock.release()
+
+    def locked(self):
+        if self.lock is None:
+            return False
+        return self.lock.locked()
+
 
 # The "most recent" locks prevent more than 1 thread or task from waiting.
 # If you try to acquire the lock, the waiting thread is released with a  
@@ -117,18 +152,11 @@ class Client(object):
         self.host = quart.websocket.host
         self.origin = quart.websocket.origin
         self.authentication = None
+        self.context = LockContext()
 
     def __str__(self):
         return "<Client: address={}, host={}, authentication={}>".format(
             self.address, self.host, self.authentication)
-
-
-def exception_handler(loop, context):
-    if 'future' in context:
-        task = context['future']
-        exception = context['exception']
-        # Route the exception through sys.excepthook.
-        sys.excepthook(exception.__class__, exception, exception.__traceback__)
 
 
 class Pusher(object):
@@ -136,7 +164,7 @@ class Pusher(object):
     def __init__(self, server):
         self.server = server
         self.clients = []
-        self.loop = None
+        self.loop = asyncio.get_event_loop()
         self.url_map = {}
         self.connect_callback = None
 
@@ -145,11 +173,6 @@ class Pusher(object):
         async def update_component_socket():
             #print('**** spawning')
             try:
-                # Quart creates the event loop.  This is the best place to grab it (I think).
-                if self.loop is None:
-                    self.loop = asyncio.get_event_loop()
-                    self.loop.set_exception_handler(exception_handler)
-
                 tasks = []
                 client = Client()
                 self.clients.append(client)
@@ -188,7 +211,7 @@ class Pusher(object):
             data = await quart.websocket.receive()
             data = json.loads(data)
             # Create new task so we can handle more messages and keep things snappy.
-            asyncio.create_task(quart.copy_current_websocket_context(self.dispatch)(data, client))
+            task = asyncio.create_task(self.dispatch(data, client))
 
     async def socket_sender(self, client):
         while True:
