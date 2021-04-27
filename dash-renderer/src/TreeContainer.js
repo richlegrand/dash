@@ -109,7 +109,7 @@ class TreeContainer extends Component {
         pusheeAdd(props._dashprivate_layout.props, this.setProps);
     }
 
-    setProps(newProps, notify=true, updatePaths=false) {
+    setProps(newProps, notify=null, updatePaths=null) {
         const {
             _dashprivate_graphs,
             _dashprivate_dispatch,
@@ -119,10 +119,24 @@ class TreeContainer extends Component {
 
         const oldProps = this.getLayoutProps();
         const {id} = oldProps;
-        const changedProps = pickBy(
-            (val, key) => !equals(val, oldProps[key]),
-            newProps
-        );
+        var changedProps;
+
+        // notify!==null if we're being called by pushee
+        if (notify===null) { // normal setProps call by react
+            notify = true;
+            updatePaths = false;
+            changedProps = pickBy(
+                (val, key) => !equals(val, oldProps[key]),
+                newProps
+            );
+        } 
+        else  
+            // called by pushee.  Note, we set changedProps to newProps because 
+            // pushee calls come in asynchronous to react dispatches, so we 
+            // can get more than one pushee request between dispatches, which 
+            // would result in properties being discarded. 
+            changedProps = newProps;
+
         if (!isEmpty(changedProps)) {
             // Identify the modified props that are required for callbacks
             const watchedKeys = getWatchedKeys(

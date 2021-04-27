@@ -111,7 +111,7 @@ const pushee = {
             if (id in pushee.setProps) {
                 const val = data[id];
             	pushee.setProps[id](val, notify, 'children' in val);
-            } else if (id in pushee.prePropsTable) 
+            } else if (id in pushee.prePropsTable)
                 // save for later
                 pushee.prePropsTable[id].push({val: data[id], notify: notify});
             else
