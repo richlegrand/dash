@@ -151,8 +151,9 @@ class Reloader extends React.Component {
                     window.top.location.reload();
                 }
             } else {
-                // Backend code changed - can do a soft reload in place
-                dispatch({type: 'RELOAD'});
+                // This used to be a soft reload, ie dispatch({type: 'RELOAD'});
+                // But if the html index changes, a soft reload won't pick this up.
+                window.top.location.reload();
             }
         } else if (reloadRequest.status === 500) {
             if (this._retry > this.state.max_retry) {
