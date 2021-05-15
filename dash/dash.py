@@ -488,12 +488,11 @@ class Dash(object):
 
     async def push_mods_coro(self, mods, client=None):
         if isinstance(mods, list):
-            props = mods
-            mods = list_to_mods(props)
+            mods = list_to_mods(mods)
         else:
             if isinstance(mods, Output):
                 mods = {mods.component_id: {mods.component_property: mods.component_value}}
-            props = mods_to_list(mods)
+        props = mods_to_list(mods)
 
         callback_ids, x_list = self._callback_intersect(props, Services.shared_test)
         if callback_ids and client is None:
