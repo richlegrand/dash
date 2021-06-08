@@ -147,6 +147,11 @@ class Services(object):
 
     # SHARED aka S1: all clients see the same thing, e.g. one device.
     SHARED = PUSHER_UPDATE + NO_CLIENT_INITIAL_CALLBACK + SHARED_CALLBACK + \
+        SERVER_INITIAL_CALLBACK + SERIALIZED_CALLBACK + SHARE_WITH_OTHER_CLIENTS
+    # SHARED_MOST_RECENT will toss out all callbacks except the most recent
+    # (When a callback comes in, if one is queued up, it will get replaced with more
+    # recent callback.)
+    SHARED_MOST_RECENT = PUSHER_UPDATE + NO_CLIENT_INITIAL_CALLBACK + SHARED_CALLBACK + \
         SERVER_INITIAL_CALLBACK + SERIALIZED_MOST_RECENT_CALLBACK + SHARE_WITH_OTHER_CLIENTS
 
     # S2: clients see different things, e.g. N devices.

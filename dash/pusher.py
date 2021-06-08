@@ -166,7 +166,7 @@ class Pusher(object):
         self.clients = []
         self.loop = asyncio.get_event_loop()
         self.url_map = {}
-        self.connect_callback = None
+        self.connect_callback = []
 
         # websocket connection handler 
         @self.server.websocket('/_push')
@@ -177,7 +177,7 @@ class Pusher(object):
                 client = Client()
                 self.clients.append(client)
 
-                if self.connect_callback is not None:
+                if self.connect_callback:
                     tasks.append(asyncio.create_task(self.call_connect_callback(client, True)))
 
                 tasks.append(asyncio.create_task(quart.copy_current_websocket_context(self.socket_sender)(client)))
@@ -192,7 +192,7 @@ class Pusher(object):
                 traceback.print_exc() 
             finally:
                 self.clients.remove(client)
-                if self.connect_callback is not None:
+                if self.connect_callback:
                     try:
                         await self.call_connect_callback(client, False)
                     except:
@@ -201,10 +201,11 @@ class Pusher(object):
                 #print('*** exitting')
 
     async def call_connect_callback(self, client, connect):
-        if inspect.iscoroutinefunction(self.connect_callback):
-            await self.connect_callback(client, connect)
-        else:
-            await self.loop.run_in_executor(None, self.connect_callback, client, connect) 
+        for callback in self.connect_callback:
+            if inspect.iscoroutinefunction(callback):
+                await callback(client, connect)
+            else:
+                await self.loop.run_in_executor(None, callback, client, connect) 
 
     async def socket_receiver(self, client):
         while True:
@@ -253,5 +254,5 @@ class Pusher(object):
         return result
 
     def callback_connect(self, func):
-        self.connect_callback = func
+        self.connect_callback.append(func)
 
