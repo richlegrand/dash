@@ -1394,7 +1394,8 @@ class Dash(object):
         # callback body consists of: 
         # {'output': _, 'outputs': [], 'inputs': [], 'changedPropIds': [], 'state': []}
         callback = self.callback_map[output]
-        if "args" in callback:
+        # Use remembered args unless there is any state that needs to be read.
+        if "args" in callback and not callback["state"]:
             body = deepcopy(callback["args"])
         else: # construct from layout
             inputs_ = deepcopy(callback["inputs"])
