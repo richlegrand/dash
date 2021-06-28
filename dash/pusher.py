@@ -8,6 +8,7 @@ import sys
 import inspect
 import traceback 
 from threading import Condition
+from quart import session
 
 context_rcount = ContextVar('context_rcount')
 
@@ -145,13 +146,13 @@ class LockMostRecent:
     
 
 class Client(object):
-    def __init__(self):
+    def __init__(self, authentication=None):
         self.send_queue = asyncio.Queue()
         self.connect_time = time.time()
         self.address = quart.websocket.remote_addr
         self.host = quart.websocket.host
         self.origin = quart.websocket.origin
-        self.authentication = None
+        self.authentication = authentication
         self.context = LockContext()
 
     def __str__(self):
@@ -170,11 +171,11 @@ class Pusher(object):
 
         # websocket connection handler 
         @self.server.websocket('/_push')
-        async def update_component_socket():
+        async def update_component_socket(authentication=None):
             #print('**** spawning')
             try:
                 tasks = []
-                client = Client()
+                client = Client(authentication)
                 self.clients.append(client)
 
                 if self.connect_callback:
@@ -245,7 +246,11 @@ class Pusher(object):
         # Send to all clients.
         if client is None: 
             for client in self.clients:
-                if client is not x_client:
+                # Authentication is None basically means there's no login.
+                # Otherwise authentication should evaluate to True or non-zero. 
+                # This mostly prevents unauthorized clients from receiving 
+                # shared mods (e.g. share_shared_mods)
+                if client is not x_client and (client.authentication is None or client.authentication):
                     await client.send_queue.put(message)
         # Send to one client.
         else:

@@ -391,8 +391,7 @@ class Dash(object):
             "via the Dash constructor"
         )
 
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
+        self.loop = asyncio.get_event_loop()
         self.loop.set_exception_handler(exception_handler)
         
         # list of dependencies - this one is used by the back end for dispatching
@@ -404,6 +403,7 @@ class Dash(object):
         self.layout_components = {}
         self.handle_layout_lock = ARCLock()
         self.none_output_count = 0
+        self.authorize_output_func = None
 
         # list of inline scripts
         self._inline_scripts = []
@@ -1264,8 +1264,17 @@ class Dash(object):
 
         return wrap_func
 
+    def callback_authorize_output(self, func):
+        self.authorize_output_func = func 
+
     async def call_callback(self, body, response, client):
-        func, is_coro, lock = self.callback_map[body["output"]]["callback"]
+        output = body["output"]
+
+        if self.authorize_output_func and not self.authorize_output_func(client, output):
+            raise PreventUpdate
+            
+        callback = self.callback_map[output]
+        func, is_coro, lock = callback["callback"]
 
         if is_coro:
             return await func(body, response, lock, client)  # %% callback invoked
@@ -1334,7 +1343,7 @@ class Dash(object):
                 callback_ids, x_list = await self._dispatch_chain(outputs)
                 if x_list:
                     raise Exception("{} callback(s) are part of shared callback chain, but are not shared.".format(x_list))   
-        else:
+        else: # Handle HTTP request (not websocket).
             body = await quart.request.get_json()
             response = quart.Response(None, mimetype="application/json")
             json_output, output, alt = await self.call_callback(body, response, None)
