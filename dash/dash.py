@@ -450,8 +450,7 @@ class Dash(object):
         if self.server is not None:
             self.init_app()
 
-    
-    async def handle_layout(self, id_, prop, val):
+    async def lock_layout_lock(self):
         # Look for client context.
         try:
             g = g_cc.get()
@@ -460,14 +459,25 @@ class Dash(object):
             client_context = None
         # Client context provides mutexability between clients.
         await self.handle_layout_lock.acquire(client_context)
+
+    def unlock_layout_lock(self):
+        self.handle_layout_lock.release()
+
+    async def index_components(self, layout, lock=True):
+        if lock:
+            await self.lock_layout_lock()
+        comps = flatten_layout(layout)
+        for comp in comps:
+            if comp.id not in self.layout_components:
+                self.layout_components[comp.id] = comp
+        await self._initial_callbacks(comps)
+        if lock:
+            self.unlock_layout_lock()
+    
+    async def handle_layout(self, id_, prop, val):
+        await self.lock_layout_lock()
         if id_ is None or prop=="children":
-            comps = flatten_layout(val)
-            for comp in comps:
-                try:
-                    self.layout_components[comp.id]
-                except KeyError:
-                    self.layout_components[comp.id] = comp
-            await self._initial_callbacks(comps)
+            await self.index_components(val, False)
 
         if id_ and prop:
             try: # Handle races with push_mods.
@@ -475,10 +485,10 @@ class Dash(object):
                 setattr(comp, prop, val)
             except KeyError:
                 pass 
-        self.handle_layout_lock.release()
+        self.unlock_layout_lock()
 
     async def mod_layout(self, mods):
-        if isinstance(mods, list):
+        if isinstance(mods, (list, tuple)):
             mods = list_to_mods(mods)
         for id_, vals in mods.items():
             for prop, val in vals.items():
@@ -492,7 +502,7 @@ class Dash(object):
 
 
     async def push_mods_coro(self, mods, client=None):
-        if isinstance(mods, list):
+        if isinstance(mods, (list, tuple)):
             mods = list_to_mods(mods)
         else:
             if isinstance(mods, Output):
@@ -1015,7 +1025,7 @@ class Dash(object):
         self.callback_map[callback_id] = {
             "inputs": callback_spec["inputs"],
             "state": callback_spec["state"],
-            "outputs": [c.to_dict() for c in output] if isinstance(output, list) else [output.to_dict()],
+            "outputs": [c.to_dict() for c in output] if isinstance(output, (list, tuple)) else [output.to_dict()],
             "service": service,
         }
         self._callback_list.append(callback_spec)
@@ -1223,7 +1233,7 @@ class Dash(object):
                         if isinstance(val, _NoUpdate):
                             continue
                         for vali, speci in (
-                            zip(val, spec) if isinstance(spec, list) else [[val, spec]]
+                            zip(val, spec) if isinstance(spec, (list, tuple)) else [[val, spec]]
                         ):
                             if not isinstance(vali, _NoUpdate):
                                 has_update = True
@@ -1235,14 +1245,7 @@ class Dash(object):
 
                 response = {"response": component_ids, "multi": True}
 
-                try:
-                    jsonResponse = json.dumps(
-                        response, cls=plotly.utils.PlotlyJSONEncoder
-                    )
-                except TypeError:
-                    _validate.fail_callback_output(output_value, output)
-
-                return jsonResponse, response, alt
+                return response, alt
 
             if is_coro:
                 if service&Services.SERIALIZED_MOST_RECENT_CALLBACK:
@@ -1272,7 +1275,7 @@ class Dash(object):
 
         if self.authorize_output_func and not self.authorize_output_func(client, output):
             raise PreventUpdate
-            
+
         callback = self.callback_map[output]
         func, is_coro, lock = callback["callback"]
 
@@ -1314,7 +1317,7 @@ class Dash(object):
 
             # Call callback.
             try:
-                json_response, response, alt = await self.call_callback(body, None, client)
+                response, alt = await self.call_callback(body, None, client)
             except PreventUpdate:
                 if request_id is not None:
                     await self.pusher.respond({}, request_id) # send empty response
@@ -1342,13 +1345,29 @@ class Dash(object):
                     await self.share_shared_mods(output_mods)
                 callback_ids, x_list = await self._dispatch_chain(outputs)
                 if x_list:
-                    raise Exception("{} callback(s) are part of shared callback chain, but are not shared.".format(x_list))   
+                    raise Exception("{} callback(s) are part of shared callback chain, but are not shared.".format(x_list)) 
+            else:
+                # Check values for children so we can index components that pass through.
+                # Note, any component in a layout hierarchy can potentially be a shared
+                # component even if its parent is not.  We index so we have a record when
+                # shared components are modified in the future.      
+                for id_, vals in response["response"].items():
+                    for prop, val in vals.items(): 
+                        if prop=="children":
+                            await self.index_components(val)   
+
         else: # Handle HTTP request (not websocket).
             body = await quart.request.get_json()
             response = quart.Response(None, mimetype="application/json")
-            json_output, output, alt = await self.call_callback(body, response, None)
+            output, alt = await self.call_callback(body, response, None)
             if alt:
                 raise Exception("Cannot return alternative results with server_service not set to PUSHER_ALL.")            
+            try:
+                json_output = json.dumps(
+                    output, cls=plotly.utils.PlotlyJSONEncoder
+                )
+            except TypeError:
+                raise Exception("The callback for {} returned an object that's not JSON serializeable.".format(body["output"]))
             response.set_data(json_output)
             return response
 

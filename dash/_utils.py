@@ -197,7 +197,7 @@ def stringify_id(id_):
 def inputs_to_dict(inputs_list):
     inputs = {}
     for i in inputs_list:
-        inputsi = i if isinstance(i, list) else [i]
+        inputsi = i if isinstance(i, (list, tuple)) else [i]
         for ii in inputsi:
             id_str = stringify_id(ii["id"])
             inputs["{}.{}".format(id_str, ii["property"])] = ii.get("value")
@@ -206,7 +206,7 @@ def inputs_to_dict(inputs_list):
 
 def inputs_to_vals(inputs):
     return [
-        [ii.get("value") for ii in i] if isinstance(i, list) else i.get("value")
+        [ii.get("value") for ii in i] if isinstance(i, (list, tuple)) else i.get("value")
         for i in inputs
     ]
 
