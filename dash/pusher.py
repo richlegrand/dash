@@ -146,13 +146,14 @@ class LockMostRecent:
     
 
 class Client(object):
-    def __init__(self, authentication=None):
+    def __init__(self, authentication, username):
         self.send_queue = asyncio.Queue()
         self.connect_time = time.time()
         self.address = quart.websocket.remote_addr
         self.host = quart.websocket.host
         self.origin = quart.websocket.origin
         self.authentication = authentication
+        self.username = username
         self.context = LockContext()
 
     def __str__(self):
@@ -162,20 +163,20 @@ class Client(object):
 
 class Pusher(object):
 
-    def __init__(self, server):
-        self.server = server
+    def __init__(self, dash):
+        self.dash = dash
         self.clients = []
         self.loop = asyncio.get_event_loop()
         self.url_map = {}
         self.connect_callback = []
 
         # websocket connection handler 
-        @self.server.websocket('/_push')
-        async def update_component_socket(authentication=None):
+        @self.dash.server.websocket('/_push')
+        async def update_component_socket(authentication=None, username=None):
             #print('**** spawning')
             try:
                 tasks = []
-                client = Client(authentication)
+                client = Client(authentication, username)
                 self.clients.append(client)
 
                 if self.connect_callback:
@@ -204,9 +205,11 @@ class Pusher(object):
     async def call_connect_callback(self, client, connect):
         for callback in self.connect_callback:
             if inspect.iscoroutinefunction(callback):
-                await callback(client, connect)
+                res = await callback(client, connect)
             else:
-                await self.loop.run_in_executor(None, callback, client, connect) 
+                res = await self.loop.run_in_executor(None, callback, client, connect)
+            if res:
+                await self.dash.push_mods_coro(res, client) 
 
     async def socket_receiver(self, client):
         while True:

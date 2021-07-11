@@ -541,7 +541,7 @@ class Dash(object):
         if app is not None:
             self.server = app
 
-        self.pusher = Pusher(self.server)
+        self.pusher = Pusher(self)
 
         assets_blueprint_name = "{}{}".format(
             config.routes_pathname_prefix.replace("/", "_"), "dash_assets"
@@ -1343,7 +1343,7 @@ class Dash(object):
                 if service&Services.SHARE_WITH_OTHER_CLIENTS:
                     #print("send output mods", output_mods)
                     await self.share_shared_mods(output_mods)
-                callback_ids, x_list = await self._dispatch_chain(outputs)
+                callback_ids, x_list = await self._dispatch_chain(outputs, client)
                 if x_list:
                     raise Exception("{} callback(s) are part of shared callback chain, but are not shared.".format(x_list)) 
             else:
@@ -1460,22 +1460,22 @@ class Dash(object):
 
     # This method can only apply to shared callbacks.
     # Call all callbacks, return results in a list [{'id': _, 'property': _, 'value': _}, ...]. 
-    async def _dispatch_callbacks(self, bodies):
+    async def _dispatch_callbacks(self, bodies, client=None):
         tasks = []
         # If there are multiple callbacks, run in parallel.
         for body in bodies:
-            task = asyncio.create_task(self.dispatch(body))
+            task = asyncio.create_task(self.dispatch(body, client))
             tasks.append(task)
 
         await asyncio.gather(*tasks)
 
     # This method can only apply to shared callbacks.
-    async def _dispatch_chain(self, props):
+    async def _dispatch_chain(self, props, client=None):
         bodies = []
         callback_ids, x_list = self._callback_intersect(props, Services.shared_test)
         for output in callback_ids:
             bodies.append(self._callback_body(output, props)) 
-        await self._dispatch_callbacks(bodies)
+        await self._dispatch_callbacks(bodies, client)
         return callback_ids, x_list
 
 
